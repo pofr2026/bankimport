@@ -2,25 +2,33 @@
 
 **Author**: Tilo Thiele <tilo.thiele@hamburg.de>
 **License**: MIT (see License.txt)
-**Github**: https://github.com/tilothiele/bankimport
+**Github**: git@github.com:tilothiele/bankimport.git
 
 ## Description
 
-Das BankImport-Modul ermöglicht den Import von Bankauszügen im CSV-Format (camt.052 v8) in Dolibarr. Das Modul unterstützt verschiedene Kodierungen und verhindert Duplikate durch Import-Schlüssel.
+Das BankImport-Modul ermöglicht den Import von Bankauszügen in Dolibarr in zwei Formaten:
+
+- **CSV (camt.052 v8)** — z. B. Haspa-Export
+- **XML (camt.053, ISO 20022)** — z. B. Revolut Business Statement
+
+Das Format wird beim Upload automatisch erkannt (Sniffing der ersten Bytes). Das Modul verhindert Duplikate über Import-Schlüssel und unterstützt verschiedene Kodierungen für CSV.
 
 ### Features
 
 - ✅ Import von CSV-Dateien (camt.052 v8 Format)
-- ✅ Unterstützung für UTF-8 und ISO-8859-1 Kodierung
+- ✅ Import von XML-Dateien (camt.053, z. B. Revolut)
+- ✅ Automatische Format-Erkennung (CSV vs. XML)
+- ✅ Unterstützung für UTF-8 und ISO-8859-1 Kodierung (CSV)
 - ✅ Automatische Erkennung und Vermeidung von Duplikaten
-- ✅ Validierung der CSV-Daten vor dem Import
+- ✅ Validierung der Daten vor dem Import
 - ✅ Mehrsprachige Unterstützung (Deutsch/Englisch/Französisch)
-- ✅ Berechtigungen an das Bank-Modul gekoppelt
+- ✅ Verbesserte Fehlerbehandlung und Logging
+- ✅ Sichere Datei-Upload-Validierung
 
 ### System Requirements
 
 - **PHP**: 7.4 oder höher
-- **Dolibarr**: 21.0.0 oder höher
+- **Dolibarr**: 16.0.0 oder höher
 - **Aktiviertes Bank-Modul** in Dolibarr
 
 ## Installation
@@ -34,9 +42,11 @@ Siehe [INSTALL.md](INSTALL.md) für detaillierte Installationsanweisungen.
 3. Konfigurieren Sie die Berechtigungen
 4. Gehen Sie zu **Bank** → **Kontoauszüge importieren**
 
-## CSV Format
+## Supported Formats
 
-### Supported Format
+Das Modul akzeptiert zwei Eingabeformate. Die Auswahl erfolgt **automatisch** anhand der Datei (Sniffing: `<?xml` / `<Document` ⇒ XML, sonst CSV).
+
+### CSV (camt.052 v8, z. B. Haspa)
 
 * Die Import-Datei ist eine CSV-Datei. Die erste Zeile wird als Header übersprungen.
 * Feldtrennzeichen ist ein Semikolon ';'.
@@ -44,7 +54,14 @@ Siehe [INSTALL.md](INSTALL.md) für detaillierte Installationsanweisungen.
 * String-Werte können in Anführungszeichen gesetzt werden.
 * Unterstützte Kodierungen: ISO-8859-1, UTF-8
 
-### Field Mapping
+### XML (camt.053, ISO 20022, z. B. Revolut Business)
+
+* Die Import-Datei ist eine XML-Datei im ISO-20022-Format `camt.053.001.xx`.
+* Die Kodierung wird der XML-Deklaration entnommen (typischerweise UTF-8).
+* Der Default-Namespace wird beim Parsen entfernt; verschiedene `camt.053`-Minorversionen werden unterstützt.
+* Erwartete Struktur: `Document/BkToCstmrStmt/Stmt/Ntry[]`.
+
+### CSV Field Mapping
 
 Nicht alle Felder werden importiert. Das statische Mapping zu Dolibarr-Feldern:
 
@@ -61,6 +78,27 @@ Nicht alle Felder werden importiert. Das statische Mapping zu Dolibarr-Feldern:
 | 13 | bank_other | BIC (Gegenpartei) |
 | 14 | amount | Betrag |
 | 15 | currency | Währung |
+
+### XML Field Mapping (camt.053)
+
+Mapping pro `<Ntry>` (Transaktion) zu Dolibarr-Feldern. Bei mehreren `<TxDtls>` werden die `Ustrd`/`AddtlTxInf`-Texte mit `' | '` konkateniert.
+
+| XML Path | Dolibarr Field | Description |
+|----------|----------------|-------------|
+| `Ntry/Amt` + `Ntry/CdtDbtInd` | amount | Betrag. `DBIT` ⇒ negativ, `CRDT` ⇒ positiv |
+| `Ntry/BookgDt/DtTm` (Fallback `Dt`) | dateo | Buchungstag (ISO-8601, normalisiert auf Mitternacht) |
+| `Ntry/ValDt/DtTm` (Fallback `Dt`) | datev | Valutadatum |
+| `Ntry/NtryDtls/TxDtls/RmtInf/Ustrd` (Fallback `AddtlTxInf`, dann `Ntry/AddtlNtryInf`) | label | Verwendungszweck |
+| `Ntry/NtryDtls/TxDtls/RltdPties/Dbtr|Cdtr/Nm` (Fallback `InitgPty/Pty/Nm`) | owner_other | Kontrahent (Dbtr bei CRDT, Cdtr bei DBIT) |
+| `Ntry/NtryDtls/TxDtls/RltdPties/DbtrAcct|CdtrAcct/Id/IBAN` | iban_other | IBAN der Gegenpartei |
+| `Ntry/NtryDtls/TxDtls/RltdAgts/DbtrAgt|CdtrAgt/FinInstnId/BICFI` (Fallback `BIC`) | bank_other | BIC der Gegenpartei |
+| `Ntry/AcctSvcrRef` | import_key (SHA-1, 14 Zeichen) + notes (`AcctSvcrRef=…`) | Eindeutige Transaktions-ID für Duplikat-Erkennung |
+
+**Kontrahent-Logik:** Bei eingehender Zahlung (`CRDT`) ist die Gegenpartei der Schuldner (`Dbtr`/`DbtrAcct`/`DbtrAgt`); bei ausgehender Zahlung (`DBIT`) der Gläubiger (`Cdtr`/`CdtrAcct`/`CdtrAgt`).
+
+**Duplikat-Erkennung:** Wenn `AcctSvcrRef` vorhanden ist (typisch für Revolut), wird sie zur SHA-1-gehashten `import_key` (14 Zeichen). Sonst Fallback auf Hash aus `iban_other|owner_other|amount|label|ref` (wie bei CSV).
+
+**Hinweis Währung:** `Ccy` aus dem Attribut von `<Amt>` wird nicht explizit übernommen — Dolibarr verwendet die Währung des ausgewählten Bankkontos. Stelle sicher, dass das in Dolibarr ausgewählte Konto die Währung der XML-Datei hat (z. B. CHF bei einem CHF-Revolut-Statement).
 
 ## 📑 Record Description – Haspa CSV (camt.052 v8 Export)
 
@@ -119,6 +157,13 @@ Bei Fragen oder Problemen:
 ## Changelog
 
 Siehe [ChangeLog.md](ChangeLog.md) für detaillierte Änderungen.
+
+### Version 0.0.11
+- Unterstützung für XML-Import im camt.053-Format (z. B. Revolut Business)
+- Automatische Format-Erkennung (CSV vs. XML) anhand des Datei-Inhalts
+- Duplikat-Erkennung für XML via `AcctSvcrRef` (SHA-1-Hash auf 14 Zeichen)
+- Korrekte Vorzeichen-Behandlung (`CdtDbtInd` DBIT/CRDT)
+- Kontrahent-Auflösung richtungsabhängig (Dbtr bei CRDT, Cdtr bei DBIT)
 
 ### Version 0.0.10
 - Erste Veröffentlichung

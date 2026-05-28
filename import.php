@@ -157,7 +157,7 @@ print '</tr>';
 print '<tr class="oddeven">';
 print '<td class="fieldrequired">'.$langs->trans("BANKIMPORT_File_label").'</td>';
 print '<td>';
-print '<input type="file" name="statement" accept=".csv,text/csv,text/plain" required>';
+print '<input type="file" name="statement" accept=".csv,.xml,text/csv,text/plain,text/xml,application/xml" required>';
 print '</td>';
 print '</tr>';
 

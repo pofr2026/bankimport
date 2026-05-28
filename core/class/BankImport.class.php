@@ -123,9 +123,9 @@ class BankImport extends CommonObject
             return false;
         }
 
-        $allowedTypes = array('text/csv', 'text/plain', 'application/csv');
-        if (!in_array($file['type'], $allowedTypes) && !preg_match('/\.csv$/i', $file['name'])) {
-            $this->error = 'Invalid file type (CSV required)';
+        $allowedTypes = array('text/csv', 'text/plain', 'application/csv', 'text/xml', 'application/xml');
+        if (!in_array($file['type'], $allowedTypes) && !preg_match('/\.(csv|xml)$/i', $file['name'])) {
+            $this->error = 'Invalid file type (CSV or XML required)';
             return false;
         }
 
@@ -133,10 +133,11 @@ class BankImport extends CommonObject
     }
 
     /**
-     * Process CSV file
+     * Process a bank statement file (CSV camt.052 v8 or XML camt.053).
+     * The format is detected automatically.
      *
      * @param string $filename File path
-     * @return array Array with success count and errors
+     * @return array Array with success count, skipped count and errors
      */
     public function processFile($filename)
     {
@@ -153,9 +154,44 @@ class BankImport extends CommonObject
             return $result;
         }
 
+        if ($this->detectFormat($filename) === 'xml') {
+            return $this->processFileXml($filename, $result);
+        }
+        return $this->processFileCsv($filename, $result);
+    }
+
+    /**
+     * Detect file format by sniffing the first bytes.
+     *
+     * @param string $filename File path
+     * @return string 'xml' or 'csv'
+     */
+    private function detectFormat($filename)
+    {
+        $fp = @fopen($filename, 'r');
+        if (!$fp) return 'csv';
+        $head = fread($fp, 512);
+        fclose($fp);
+        $head = ltrim($head, "\xEF\xBB\xBF \t\n\r");
+        if (strncmp($head, '<?xml', 5) === 0 || strncmp($head, '<Document', 9) === 0) {
+            return 'xml';
+        }
+        return 'csv';
+    }
+
+    /**
+     * Process a CSV file (camt.052 v8 export, e.g. Haspa).
+     *
+     * @param string $filename File path
+     * @param array $result Accumulator
+     * @return array Result array
+     */
+    private function processFileCsv($filename, $result)
+    {
         $handle = fopen($filename, 'r');
         if (!$handle) {
             $this->error = 'Could not open file';
+            $result['errors'][] = $this->error;
             return $result;
         }
 
@@ -186,6 +222,209 @@ class BankImport extends CommonObject
 
         fclose($handle);
         return $result;
+    }
+
+    /**
+     * Process an XML file in CAMT.053 format (e.g. Revolut Business statement).
+     *
+     * @param string $filename File path
+     * @param array $result Accumulator
+     * @return array Result array
+     */
+    private function processFileXml($filename, $result)
+    {
+        $content = @file_get_contents($filename);
+        if ($content === false) {
+            $this->error = 'Could not read XML file';
+            $result['errors'][] = $this->error;
+            return $result;
+        }
+
+        // Strip the default namespace declaration so SimpleXML element access works without prefixes.
+        $content = preg_replace('/\sxmlns="[^"]+"/', '', $content, 1);
+
+        $prevUseErrors = libxml_use_internal_errors(true);
+        $xml = simplexml_load_string($content);
+        if ($xml === false) {
+            $errors = libxml_get_errors();
+            $msg = 'Invalid XML';
+            if (!empty($errors)) {
+                $msg .= ': ' . trim($errors[0]->message);
+            }
+            libxml_clear_errors();
+            libxml_use_internal_errors($prevUseErrors);
+            $result['errors'][] = $msg;
+            return $result;
+        }
+        libxml_use_internal_errors($prevUseErrors);
+
+        if (!isset($xml->BkToCstmrStmt)) {
+            $result['errors'][] = 'Not a CAMT bank statement (missing BkToCstmrStmt)';
+            return $result;
+        }
+
+        $idx = 0;
+        foreach ($xml->BkToCstmrStmt->Stmt as $stmt) {
+            foreach ($stmt->Ntry as $ntry) {
+                $idx++;
+                $importResult = $this->processXmlEntry($ntry, $idx);
+                if ($importResult === true) {
+                    $result['success']++;
+                } elseif ($importResult === 'skipped') {
+                    $result['skipped']++;
+                } else {
+                    $result['errors'][] = "Entry $idx: " . $importResult;
+                }
+            }
+        }
+
+        if ($idx === 0) {
+            $result['errors'][] = 'No transactions (Ntry) found in XML';
+        }
+
+        return $result;
+    }
+
+    /**
+     * Process a single CAMT.053 <Ntry> element.
+     *
+     * @param SimpleXMLElement $ntry Entry node
+     * @param int $idx Entry index (1-based) for error messages
+     * @return bool|string True on success, 'skipped' if duplicate, error message on failure
+     */
+    private function processXmlEntry($ntry, $idx)
+    {
+        global $user;
+
+        $amount = (float) $ntry->Amt;
+        $cdtDbt = (string) $ntry->CdtDbtInd;
+        if ($cdtDbt === 'DBIT') {
+            $amount = -$amount;
+        }
+
+        $bookDtTm = (string) $ntry->BookgDt->DtTm;
+        if ($bookDtTm === '') $bookDtTm = (string) $ntry->BookgDt->Dt;
+        $valDtTm = (string) $ntry->ValDt->DtTm;
+        if ($valDtTm === '') $valDtTm = (string) $ntry->ValDt->Dt;
+
+        $dateo = $this->parseIsoDate($bookDtTm);
+        if (!$dateo) {
+            return 'Missing or invalid booking date';
+        }
+        $datev = $this->parseIsoDate($valDtTm);
+        if (!$datev) $datev = $dateo;
+
+        $transactionId = trim((string) $ntry->AcctSvcrRef);
+
+        $label = '';
+        $owner_other = '';
+        $iban_other = '';
+        $bank_other = '';
+
+        if (isset($ntry->NtryDtls->TxDtls)) {
+            // CRDT (incoming) -> debtor is the counterparty; DBIT (outgoing) -> creditor.
+            if ($cdtDbt === 'CRDT') {
+                $partyTag = 'Dbtr';
+                $acctTag  = 'DbtrAcct';
+                $agtTag   = 'DbtrAgt';
+            } else {
+                $partyTag = 'Cdtr';
+                $acctTag  = 'CdtrAcct';
+                $agtTag   = 'CdtrAgt';
+            }
+
+            foreach ($ntry->NtryDtls->TxDtls as $tx) {
+                $piece = trim((string) $tx->RmtInf->Ustrd);
+                if ($piece === '') $piece = trim((string) $tx->AddtlTxInf);
+                if ($piece !== '') {
+                    $label = ($label === '') ? $piece : ($label . ' | ' . $piece);
+                }
+
+                $candName = trim((string) $tx->RltdPties->{$partyTag}->Nm);
+                if ($candName === '') {
+                    $candName = trim((string) $tx->RltdPties->InitgPty->Pty->Nm);
+                }
+                if ($candName !== '' && $owner_other === '') $owner_other = $candName;
+
+                $candIban = trim((string) $tx->RltdPties->{$acctTag}->Id->IBAN);
+                if ($candIban !== '' && $iban_other === '') $iban_other = $candIban;
+
+                $candBic = trim((string) $tx->RltdAgts->{$agtTag}->FinInstnId->BICFI);
+                if ($candBic === '') {
+                    $candBic = trim((string) $tx->RltdAgts->{$agtTag}->FinInstnId->BIC);
+                }
+                if ($candBic !== '' && $bank_other === '') $bank_other = $candBic;
+            }
+        }
+        if ($label === '') $label = trim((string) $ntry->AddtlNtryInf);
+
+        $label = $this->limitString($label);
+        $owner_other = $this->limitString($owner_other);
+
+        $ref = '';
+
+        // import_key column is varchar(14); hash AcctSvcrRef to fit.
+        $importKey = (!empty($transactionId))
+            ? substr(sha1($transactionId), 0, 14)
+            : $this->generateImportKey(null, $iban_other, $owner_other, $amount, $label, $ref);
+
+        if ($this->isAlreadyImported($importKey)) {
+            return 'skipped';
+        }
+
+        $note = '';
+        if (!empty($transactionId)) {
+            $note = 'AcctSvcrRef=' . $transactionId;
+        }
+
+        $this->db->begin();
+        try {
+            $account = new Account($this->db);
+            $account->fetch($this->accountid);
+
+            $bankline_id = $account->addline(
+                $dateo,
+                'VIR',
+                $label,
+                $amount,
+                $ref,
+                null, // categorie
+                $user,
+                $owner_other,
+                $bank_other,
+                $iban_other,
+                $datev,
+                null, // num_releve
+                null, // amount_main_currency
+                $note
+            );
+
+            if ($bankline_id > 0) {
+                $this->updateImportKey($bankline_id, $importKey);
+                $this->db->commit();
+                return true;
+            }
+            $this->db->rollback();
+            return $account->error ?: 'Unknown error while inserting bank line';
+        } catch (Exception $e) {
+            $this->db->rollback();
+            return $e->getMessage();
+        }
+    }
+
+    /**
+     * Parse an ISO-8601 datetime (e.g. "2026-04-28T16:12:03.829Z") into a
+     * Dolibarr server-time timestamp at midnight of that day.
+     *
+     * @param string $dateString ISO-8601 datetime
+     * @return int Timestamp (0 if invalid)
+     */
+    private function parseIsoDate($dateString)
+    {
+        if (empty($dateString)) return 0;
+        $ts = strtotime($dateString);
+        if ($ts === false || $ts <= 0) return 0;
+        return dol_mktime(0, 0, 0, (int) date('m', $ts), (int) date('d', $ts), (int) date('Y', $ts));
     }
 
     /**
