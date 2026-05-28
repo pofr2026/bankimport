@@ -3,7 +3,7 @@ name: Build Release
 on:
   push:
     tags:
-      - '[0-9]+.[0-9]+.[0-9]+'   # Trigger nur bei Tags im Format X.Y.Z
+      - 'v[0-9]+.[0-9]+.[0-9]+'   # Trigger nur bei Tags im Format vX.Y.Z
 
 permissions:
   contents: write   # wichtig für Release-Upload
@@ -33,22 +33,25 @@ jobs:
       - name: Generate config files
         run: |
           TAG="${GITHUB_REF_NAME}"
-          sed "s/{{VERSION}}/$TAG/g" build/module_descriptor.json > module_descriptor.json
-          echo "VERSION=$TAG" > .env
+          VERSION="${TAG#v}"
+          sed "s/{{VERSION}}/$VERSION/g" build/module_descriptor.json > module_descriptor.json
+          echo "VERSION=$VERSION" > .env
 
       # 5. Pack alles in ZIP
       - name: Create zip
         run: |
-          TAG=${GITHUB_REF##*/}
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#v}"
           mkdir -p dist/bankimport
-          rsync -av --exclude 'dist' --exclude '.git' --exclude '.github' ./ dist/bankimport/
+          rsync -av --exclude 'dist' --exclude '.git' --exclude '.github' --exclude 'build' ./ dist/bankimport/
           cd dist
-          zip -r ../module_bankimport-$TAG.zip bankimport
+          zip -r ../module_bankimport-$VERSION.zip bankimport
 
       # 6. Release mit ZIP
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: module_bankimport-*.zip
+          generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
