@@ -1,0 +1,552 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Sanitized snapshot of a real Revolut Business CAMT.053 statement
+  covering 2026-01-01 to 2026-05-29, used to drive Statement Verification tests.
+
+  Sanitization (PII removed, math preserved):
+    - Account holder name / address / VAT-ID replaced with generic placeholders
+    - Counterparty natural-person names replaced with "Test User One/Two"
+    - Account IBAN and counterparty IBAN replaced with all-zero IBANs (still valid format)
+    - Card PAN partially-masked digits replaced with 4000...0001
+    - Free-text labels referencing private items rewritten to neutral descriptions
+  Kept verbatim (no PII, load-bearing for verification math):
+    - All amounts, dates, currency codes
+    - All AcctSvcrRef / MsgId / Stmt Id (random hashes, no semantic content)
+    - Balance blocks (OPBD/CLBD) and TxsSummry totals
+    - Charges block on the 2026-03-25 FX entry (drives FeeSplitter design in v0.0.14)
+
+  Internal-consistency check (verifiable by hand):
+    OPBD 235.58 + TtlNetNtry 1218.08 = CLBD 1453.66
+    TtlCdtNtries.Sum 4184.48 - TtlDbtNtries.Sum 2966.40 = 1218.08
+    NbOfNtries 27 = 8 credit + 19 debit
+-->
+<Document xmlns="urn:iso:std:iso:20022:tech:xsd:camt.053.001.08">
+  <BkToCstmrStmt>
+    <GrpHdr>
+      <MsgId>65d0e138d8424fd5b01792e234ef79c3</MsgId>
+      <CreDtTm>2026-05-29T13:30:45.049Z</CreDtTm>
+    </GrpHdr>
+    <Stmt>
+      <Id>fc3b2d4c9e234852841712ff90fc333f</Id>
+      <ElctrncSeqNb>1780061445049</ElctrncSeqNb>
+      <CreDtTm>2026-05-29T13:30:45.049Z</CreDtTm>
+      <FrToDt>
+        <FrDtTm>2026-01-01T00:00:00Z</FrDtTm>
+        <ToDtTm>2026-05-29T23:59:59.999Z</ToDtTm>
+      </FrToDt>
+      <Acct>
+        <Id><IBAN>LT000000000000000001</IBAN></Id>
+        <Tp><Cd>TRAN</Cd></Tp>
+        <Ccy>CHF</Ccy>
+        <Nm>Main</Nm>
+        <Ownr>
+          <Nm>Test Company GmbH</Nm>
+          <PstlAdr>
+            <PstCd>0000</PstCd>
+            <TwnNm>Test City</TwnNm>
+            <Ctry>CH</Ctry>
+            <AdrLine>Test Street 1</AdrLine>
+          </PstlAdr>
+          <Id>
+            <OrgId>
+              <Othr>
+                <Id>CHE-000.000.001</Id>
+                <SchmeNm><Cd>COID</Cd></SchmeNm>
+              </Othr>
+            </OrgId>
+          </Id>
+        </Ownr>
+        <Svcr>
+          <FinInstnId><Nm>Revolut Bank UAB</Nm></FinInstnId>
+        </Svcr>
+      </Acct>
+      <Bal>
+        <Tp><CdOrPrtry><Cd>OPBD</Cd></CdOrPrtry></Tp>
+        <Amt Ccy="CHF">235.58</Amt>
+        <CdtDbtInd>CRDT</CdtDbtInd>
+        <Dt><DtTm>2026-01-01T00:00:00Z</DtTm></Dt>
+      </Bal>
+      <Bal>
+        <Tp><CdOrPrtry><Cd>CLBD</Cd></CdOrPrtry></Tp>
+        <Amt Ccy="CHF">1453.66</Amt>
+        <CdtDbtInd>CRDT</CdtDbtInd>
+        <Dt><DtTm>2026-05-29T23:59:59.999Z</DtTm></Dt>
+      </Bal>
+      <TxsSummry>
+        <TtlNtries>
+          <NbOfNtries>27</NbOfNtries>
+          <Sum>7150.88</Sum>
+          <TtlNetNtry>
+            <Amt>1218.08</Amt>
+            <CdtDbtInd>CRDT</CdtDbtInd>
+          </TtlNetNtry>
+        </TtlNtries>
+        <TtlCdtNtries><NbOfNtries>8</NbOfNtries><Sum>4184.48</Sum></TtlCdtNtries>
+        <TtlDbtNtries><NbOfNtries>19</NbOfNtries><Sum>2966.40</Sum></TtlDbtNtries>
+      </TxsSummry>
+
+      <Ntry>
+        <Amt Ccy="CHF">10.00</Amt>
+        <CdtDbtInd>DBIT</CdtDbtInd>
+        <Sts><Cd>BOOK</Cd></Sts>
+        <BookgDt><DtTm>2026-05-28T14:48:56.804Z</DtTm></BookgDt>
+        <ValDt><DtTm>2026-05-28T14:48:56.804Z</DtTm></ValDt>
+        <AcctSvcrRef>6a1855d863bca070b7de3818301064a5</AcctSvcrRef>
+        <BkTxCd><Domn><Cd>ACMT</Cd><Fmly><Cd>OPCL</Cd><SubFmlyCd>FEES</SubFmlyCd></Fmly></Domn></BkTxCd>
+        <NtryDtls><TxDtls>
+          <RmtInf><Ustrd>Gebühr für Revolut Business • Gebühr für das Basic-Abo</Ustrd></RmtInf>
+          <AddtlTxInf>Gebühr für Revolut Business • Gebühr für das Basic-Abo</AddtlTxInf>
+        </TxDtls></NtryDtls>
+      </Ntry>
+
+      <Ntry>
+        <Amt Ccy="CHF">9.00</Amt>
+        <CdtDbtInd>DBIT</CdtDbtInd>
+        <Sts><Cd>BOOK</Cd></Sts>
+        <BookgDt><DtTm>2026-05-28T11:36:02.679Z</DtTm></BookgDt>
+        <ValDt><DtTm>2026-05-28T11:36:02.679Z</DtTm></ValDt>
+        <AcctSvcrRef>6a1828a2624fad3c99d46271c44c4712</AcctSvcrRef>
+        <BkTxCd><Domn><Cd>ACMT</Cd><Fmly><Cd>OPCL</Cd><SubFmlyCd>FEES</SubFmlyCd></Fmly></Domn></BkTxCd>
+        <NtryDtls><TxDtls>
+          <RmtInf><Ustrd>Gebühr für Revolut Business • Ausgaben App-Gebühren</Ustrd></RmtInf>
+          <AddtlTxInf>Gebühr für Revolut Business • Ausgaben App-Gebühren</AddtlTxInf>
+        </TxDtls></NtryDtls>
+      </Ntry>
+
+      <Ntry>
+        <Amt Ccy="CHF">300.00</Amt>
+        <CdtDbtInd>DBIT</CdtDbtInd>
+        <Sts><Cd>BOOK</Cd></Sts>
+        <BookgDt><DtTm>2026-05-21T10:06:26.181Z</DtTm></BookgDt>
+        <ValDt><DtTm>2026-05-21T10:06:26.181Z</DtTm></ValDt>
+        <AcctSvcrRef>6a0ebb660f43a88c87757168c53312c2</AcctSvcrRef>
+        <BkTxCd><Domn><Cd>PMNT</Cd><Fmly><Cd>ICDT</Cd><SubFmlyCd>NTAV</SubFmlyCd></Fmly></Domn></BkTxCd>
+        <NtryDtls><TxDtls>
+          <RltdPties>
+            <InitgPty><Pty><Nm>Test User One</Nm></Pty></InitgPty>
+            <Cdtr><Pty><Nm>Test Company GmbH</Nm></Pty></Cdtr>
+            <CdtrAcct><Id><IBAN>CH0000000000000000001</IBAN></Id></CdtrAcct>
+          </RltdPties>
+          <RmtInf><Ustrd>Internal transfer</Ustrd></RmtInf>
+          <AddtlTxInf>An Test Company GmbH • Internal transfer</AddtlTxInf>
+        </TxDtls></NtryDtls>
+      </Ntry>
+
+      <Ntry>
+        <Amt Ccy="CHF">10.00</Amt>
+        <CdtDbtInd>DBIT</CdtDbtInd>
+        <Sts><Cd>BOOK</Cd></Sts>
+        <BookgDt><DtTm>2026-05-17T14:03:47.805Z</DtTm></BookgDt>
+        <ValDt><DtTm>2026-05-17T14:03:47.805Z</DtTm></ValDt>
+        <AcctSvcrRef>6a06f96c3185ae85aba66870b0189f45</AcctSvcrRef>
+        <BkTxCd><Domn><Cd>PMNT</Cd><Fmly><Cd>CCRD</Cd><SubFmlyCd>POSP</SubFmlyCd></Fmly></Domn></BkTxCd>
+        <NtryDtls><TxDtls>
+          <RltdPties><InitgPty><Pty><Nm>Test User Two</Nm></Pty></InitgPty></RltdPties>
+          <RmtInf><Ustrd>Post Billingonline</Ustrd></RmtInf>
+          <CardTx><Card>
+            <CardBrnd><Id>VISA</Id></CardBrnd>
+            <AddtlCardData>400000******0001</AddtlCardData>
+          </Card></CardTx>
+          <AddtlTxInf>Post Billingonline</AddtlTxInf>
+        </TxDtls></NtryDtls>
+      </Ntry>
+
+      <Ntry>
+        <Amt Ccy="CHF">10.00</Amt>
+        <CdtDbtInd>DBIT</CdtDbtInd>
+        <Sts><Cd>BOOK</Cd></Sts>
+        <BookgDt><DtTm>2026-04-28T16:12:03.829Z</DtTm></BookgDt>
+        <ValDt><DtTm>2026-04-28T16:12:03.829Z</DtTm></ValDt>
+        <AcctSvcrRef>69f0dc53a583a3bfbaad230440cc4474</AcctSvcrRef>
+        <BkTxCd><Domn><Cd>ACMT</Cd><Fmly><Cd>OPCL</Cd><SubFmlyCd>FEES</SubFmlyCd></Fmly></Domn></BkTxCd>
+        <NtryDtls><TxDtls>
+          <RmtInf><Ustrd>Gebühr für Revolut Business • Gebühr für das Basic-Abo</Ustrd></RmtInf>
+          <AddtlTxInf>Gebühr für Revolut Business • Gebühr für das Basic-Abo</AddtlTxInf>
+        </TxDtls></NtryDtls>
+      </Ntry>
+
+      <Ntry>
+        <Amt Ccy="CHF">9.00</Amt>
+        <CdtDbtInd>DBIT</CdtDbtInd>
+        <Sts><Cd>BOOK</Cd></Sts>
+        <BookgDt><DtTm>2026-04-28T11:35:40.834Z</DtTm></BookgDt>
+        <ValDt><DtTm>2026-04-28T11:35:40.834Z</DtTm></ValDt>
+        <AcctSvcrRef>69f09b8cc7d4ab589ff162f96d751298</AcctSvcrRef>
+        <BkTxCd><Domn><Cd>ACMT</Cd><Fmly><Cd>OPCL</Cd><SubFmlyCd>FEES</SubFmlyCd></Fmly></Domn></BkTxCd>
+        <NtryDtls><TxDtls>
+          <RmtInf><Ustrd>Gebühr für Revolut Business • Ausgaben App-Gebühren</Ustrd></RmtInf>
+          <AddtlTxInf>Gebühr für Revolut Business • Ausgaben App-Gebühren</AddtlTxInf>
+        </TxDtls></NtryDtls>
+      </Ntry>
+
+      <Ntry>
+        <Amt Ccy="CHF">250.00</Amt>
+        <CdtDbtInd>CRDT</CdtDbtInd>
+        <Sts><Cd>BOOK</Cd></Sts>
+        <BookgDt><DtTm>2026-04-26T07:08:45.191Z</DtTm></BookgDt>
+        <ValDt><DtTm>2026-04-26T07:08:45.191Z</DtTm></ValDt>
+        <AcctSvcrRef>69edb9fd4467af20a103766b88989b6b</AcctSvcrRef>
+        <BkTxCd><Domn><Cd>ACMT</Cd><Fmly><Cd>ACOP</Cd><SubFmlyCd>OTHR</SubFmlyCd></Fmly></Domn></BkTxCd>
+        <NtryDtls><TxDtls>
+          <RmtInf><Ustrd>Reward</Ustrd></RmtInf>
+          <AddtlTxInf>Reward</AddtlTxInf>
+        </TxDtls></NtryDtls>
+      </Ntry>
+
+      <Ntry>
+        <Amt Ccy="CHF">407.93</Amt>
+        <CdtDbtInd>DBIT</CdtDbtInd>
+        <Sts><Cd>BOOK</Cd></Sts>
+        <BookgDt><DtTm>2026-04-24T13:12:25.858Z</DtTm></BookgDt>
+        <ValDt><DtTm>2026-04-24T13:12:25.858Z</DtTm></ValDt>
+        <AcctSvcrRef>69eb6c391b1ba96da3ccd75f88ab53de</AcctSvcrRef>
+        <BkTxCd><Domn><Cd>FORX</Cd><Fmly><Cd>SPOT</Cd><SubFmlyCd>NTAV</SubFmlyCd></Fmly></Domn></BkTxCd>
+        <AmtDtls><TxAmt>
+          <Amt Ccy="CHF">407.93</Amt>
+          <CcyXchg>
+            <SrcCcy>CHF</SrcCcy>
+            <TrgtCcy>EUR</TrgtCcy>
+            <UnitCcy>CHF</UnitCcy>
+            <XchgRate>1.0859939939</XchgRate>
+          </CcyXchg>
+        </TxAmt></AmtDtls>
+        <NtryDtls><TxDtls>
+          <RltdPties><InitgPty><Pty><Nm>Test User One</Nm></Pty></InitgPty></RltdPties>
+          <RmtInf><Ustrd>Main · CHF -&gt; Main · EUR</Ustrd></RmtInf>
+          <AddtlTxInf>Main · CHF -&gt; Main · EUR</AddtlTxInf>
+        </TxDtls></NtryDtls>
+      </Ntry>
+
+      <Ntry>
+        <Amt Ccy="CHF">250.00</Amt>
+        <CdtDbtInd>CRDT</CdtDbtInd>
+        <Sts><Cd>BOOK</Cd></Sts>
+        <BookgDt><DtTm>2026-04-24T11:35:43.203Z</DtTm></BookgDt>
+        <ValDt><DtTm>2026-04-24T11:35:43.203Z</DtTm></ValDt>
+        <AcctSvcrRef>69eb558f77bda156b637b17829029074</AcctSvcrRef>
+        <BkTxCd><Domn><Cd>ACMT</Cd><Fmly><Cd>ACOP</Cd><SubFmlyCd>OTHR</SubFmlyCd></Fmly></Domn></BkTxCd>
+        <NtryDtls><TxDtls>
+          <RmtInf><Ustrd>Reward</Ustrd></RmtInf>
+          <AddtlTxInf>Reward</AddtlTxInf>
+        </TxDtls></NtryDtls>
+      </Ntry>
+
+      <Ntry>
+        <Amt Ccy="CHF">250.00</Amt>
+        <CdtDbtInd>CRDT</CdtDbtInd>
+        <Sts><Cd>BOOK</Cd></Sts>
+        <BookgDt><DtTm>2026-04-23T08:25:38.008Z</DtTm></BookgDt>
+        <ValDt><DtTm>2026-04-23T08:25:38.008Z</DtTm></ValDt>
+        <AcctSvcrRef>69e9d782fb3aa8f19fa48ab265f0c781</AcctSvcrRef>
+        <BkTxCd><Domn><Cd>ACMT</Cd><Fmly><Cd>ACOP</Cd><SubFmlyCd>OTHR</SubFmlyCd></Fmly></Domn></BkTxCd>
+        <NtryDtls><TxDtls>
+          <RmtInf><Ustrd>Reward</Ustrd></RmtInf>
+          <AddtlTxInf>Reward</AddtlTxInf>
+        </TxDtls></NtryDtls>
+      </Ntry>
+
+      <Ntry>
+        <Amt Ccy="CHF">332.47</Amt>
+        <CdtDbtInd>DBIT</CdtDbtInd>
+        <Sts><Cd>BOOK</Cd></Sts>
+        <BookgDt><DtTm>2026-04-16T11:08:21.445Z</DtTm></BookgDt>
+        <ValDt><DtTm>2026-04-16T11:08:21.445Z</DtTm></ValDt>
+        <AcctSvcrRef>69e0c3256a03a0dea39157e815fccb8b</AcctSvcrRef>
+        <BkTxCd><Domn><Cd>FORX</Cd><Fmly><Cd>SPOT</Cd><SubFmlyCd>NTAV</SubFmlyCd></Fmly></Domn></BkTxCd>
+        <AmtDtls><TxAmt>
+          <Amt Ccy="CHF">332.47</Amt>
+          <CcyXchg>
+            <SrcCcy>CHF</SrcCcy>
+            <TrgtCcy>EUR</TrgtCcy>
+            <UnitCcy>CHF</UnitCcy>
+            <XchgRate>1.0828127270</XchgRate>
+          </CcyXchg>
+        </TxAmt></AmtDtls>
+        <NtryDtls><TxDtls>
+          <RltdPties><InitgPty><Pty><Nm>Test User One</Nm></Pty></InitgPty></RltdPties>
+          <RmtInf><Ustrd>Main · CHF -&gt; Main · EUR</Ustrd></RmtInf>
+          <AddtlTxInf>Main · CHF -&gt; Main · EUR</AddtlTxInf>
+        </TxDtls></NtryDtls>
+      </Ntry>
+
+      <Ntry>
+        <Amt Ccy="CHF">250.00</Amt>
+        <CdtDbtInd>CRDT</CdtDbtInd>
+        <Sts><Cd>BOOK</Cd></Sts>
+        <BookgDt><DtTm>2026-04-16T08:46:30.215Z</DtTm></BookgDt>
+        <ValDt><DtTm>2026-04-16T08:46:30.215Z</DtTm></ValDt>
+        <AcctSvcrRef>69e0a1e69634af249522672eeb5bca47</AcctSvcrRef>
+        <BkTxCd><Domn><Cd>ACMT</Cd><Fmly><Cd>ACOP</Cd><SubFmlyCd>OTHR</SubFmlyCd></Fmly></Domn></BkTxCd>
+        <NtryDtls><TxDtls>
+          <RmtInf><Ustrd>Reward</Ustrd></RmtInf>
+          <AddtlTxInf>Reward</AddtlTxInf>
+        </TxDtls></NtryDtls>
+      </Ntry>
+
+      <Ntry>
+        <Amt Ccy="CHF">340.00</Amt>
+        <CdtDbtInd>DBIT</CdtDbtInd>
+        <Sts><Cd>BOOK</Cd></Sts>
+        <BookgDt><DtTm>2026-04-14T14:12:42.41Z</DtTm></BookgDt>
+        <ValDt><DtTm>2026-04-14T14:12:42.41Z</DtTm></ValDt>
+        <AcctSvcrRef>69de4b5ae065af77ab559f5406764a40</AcctSvcrRef>
+        <BkTxCd><Domn><Cd>FORX</Cd><Fmly><Cd>SPOT</Cd><SubFmlyCd>NTAV</SubFmlyCd></Fmly></Domn></BkTxCd>
+        <AmtDtls><TxAmt>
+          <Amt Ccy="CHF">340.00</Amt>
+          <CcyXchg>
+            <SrcCcy>CHF</SrcCcy>
+            <TrgtCcy>EUR</TrgtCcy>
+            <UnitCcy>CHF</UnitCcy>
+            <XchgRate>1.0865899807</XchgRate>
+          </CcyXchg>
+        </TxAmt></AmtDtls>
+        <NtryDtls><TxDtls>
+          <RltdPties><InitgPty><Pty><Nm>Test User One</Nm></Pty></InitgPty></RltdPties>
+          <RmtInf><Ustrd>Main · CHF -&gt; Main · EUR</Ustrd></RmtInf>
+          <AddtlTxInf>Main · CHF -&gt; Main · EUR</AddtlTxInf>
+        </TxDtls></NtryDtls>
+      </Ntry>
+
+      <Ntry>
+        <Amt Ccy="CHF">250.00</Amt>
+        <CdtDbtInd>CRDT</CdtDbtInd>
+        <Sts><Cd>BOOK</Cd></Sts>
+        <BookgDt><DtTm>2026-04-14T09:53:03.921Z</DtTm></BookgDt>
+        <ValDt><DtTm>2026-04-14T09:53:03.921Z</DtTm></ValDt>
+        <AcctSvcrRef>69de0e7f0889a571961f5a7dc3d20c7c</AcctSvcrRef>
+        <BkTxCd><Domn><Cd>ACMT</Cd><Fmly><Cd>ACOP</Cd><SubFmlyCd>OTHR</SubFmlyCd></Fmly></Domn></BkTxCd>
+        <NtryDtls><TxDtls>
+          <RmtInf><Ustrd>Reward</Ustrd></RmtInf>
+          <AddtlTxInf>Reward</AddtlTxInf>
+        </TxDtls></NtryDtls>
+      </Ntry>
+
+      <Ntry>
+        <Amt Ccy="CHF">250.00</Amt>
+        <CdtDbtInd>CRDT</CdtDbtInd>
+        <Sts><Cd>BOOK</Cd></Sts>
+        <BookgDt><DtTm>2026-04-14T09:53:03.213Z</DtTm></BookgDt>
+        <ValDt><DtTm>2026-04-14T09:53:03.213Z</DtTm></ValDt>
+        <AcctSvcrRef>69de0e7ff1f8aab287d9a21584672099</AcctSvcrRef>
+        <BkTxCd><Domn><Cd>ACMT</Cd><Fmly><Cd>ACOP</Cd><SubFmlyCd>OTHR</SubFmlyCd></Fmly></Domn></BkTxCd>
+        <NtryDtls><TxDtls>
+          <RmtInf><Ustrd>Reward</Ustrd></RmtInf>
+          <AddtlTxInf>Reward</AddtlTxInf>
+        </TxDtls></NtryDtls>
+      </Ntry>
+
+      <Ntry>
+        <Amt Ccy="CHF">170.00</Amt>
+        <CdtDbtInd>DBIT</CdtDbtInd>
+        <Sts><Cd>BOOK</Cd></Sts>
+        <BookgDt><DtTm>2026-04-03T17:03:19.651Z</DtTm></BookgDt>
+        <ValDt><DtTm>2026-04-03T17:03:19.651Z</DtTm></ValDt>
+        <AcctSvcrRef>69cff2d75e53a5d9b0788555150efee3</AcctSvcrRef>
+        <BkTxCd><Domn><Cd>FORX</Cd><Fmly><Cd>SPOT</Cd><SubFmlyCd>NTAV</SubFmlyCd></Fmly></Domn></BkTxCd>
+        <AmtDtls><TxAmt>
+          <Amt Ccy="CHF">170.00</Amt>
+          <CcyXchg>
+            <SrcCcy>CHF</SrcCcy>
+            <TrgtCcy>EUR</TrgtCcy>
+            <UnitCcy>CHF</UnitCcy>
+            <XchgRate>1.0836722719</XchgRate>
+          </CcyXchg>
+        </TxAmt></AmtDtls>
+        <NtryDtls><TxDtls>
+          <RltdPties><InitgPty><Pty><Nm>Test User One</Nm></Pty></InitgPty></RltdPties>
+          <RmtInf><Ustrd>Main · CHF -&gt; Main · EUR</Ustrd></RmtInf>
+          <AddtlTxInf>Main · CHF -&gt; Main · EUR</AddtlTxInf>
+        </TxDtls></NtryDtls>
+      </Ntry>
+
+      <Ntry>
+        <Amt Ccy="CHF">250.00</Amt>
+        <CdtDbtInd>CRDT</CdtDbtInd>
+        <Sts><Cd>BOOK</Cd></Sts>
+        <BookgDt><DtTm>2026-04-03T03:53:07.717Z</DtTm></BookgDt>
+        <ValDt><DtTm>2026-04-03T03:53:07.717Z</DtTm></ValDt>
+        <AcctSvcrRef>69cf39a39011a16dbb276edf8b5b1ad4</AcctSvcrRef>
+        <BkTxCd><Domn><Cd>ACMT</Cd><Fmly><Cd>ACOP</Cd><SubFmlyCd>OTHR</SubFmlyCd></Fmly></Domn></BkTxCd>
+        <NtryDtls><TxDtls>
+          <RmtInf><Ustrd>Reward</Ustrd></RmtInf>
+          <AddtlTxInf>Reward</AddtlTxInf>
+        </TxDtls></NtryDtls>
+      </Ntry>
+
+      <Ntry>
+        <Amt Ccy="CHF">10.00</Amt>
+        <CdtDbtInd>DBIT</CdtDbtInd>
+        <Sts><Cd>BOOK</Cd></Sts>
+        <BookgDt><DtTm>2026-03-28T15:49:09.207Z</DtTm></BookgDt>
+        <ValDt><DtTm>2026-03-28T15:49:09.207Z</DtTm></ValDt>
+        <AcctSvcrRef>69c7f8757664a1b88dd3f1c57d52bfdb</AcctSvcrRef>
+        <BkTxCd><Domn><Cd>ACMT</Cd><Fmly><Cd>OPCL</Cd><SubFmlyCd>FEES</SubFmlyCd></Fmly></Domn></BkTxCd>
+        <NtryDtls><TxDtls>
+          <RmtInf><Ustrd>Gebühr für Revolut Business • Gebühr für das Basic-Abo</Ustrd></RmtInf>
+          <AddtlTxInf>Gebühr für Revolut Business • Gebühr für das Basic-Abo</AddtlTxInf>
+        </TxDtls></NtryDtls>
+      </Ntry>
+
+      <Ntry>
+        <Amt Ccy="CHF">6.00</Amt>
+        <CdtDbtInd>DBIT</CdtDbtInd>
+        <Sts><Cd>BOOK</Cd></Sts>
+        <BookgDt><DtTm>2026-03-28T11:35:32.947Z</DtTm></BookgDt>
+        <ValDt><DtTm>2026-03-28T11:35:32.947Z</DtTm></ValDt>
+        <AcctSvcrRef>69c7bd0460b8a037be992e7cb532333c</AcctSvcrRef>
+        <BkTxCd><Domn><Cd>ACMT</Cd><Fmly><Cd>OPCL</Cd><SubFmlyCd>FEES</SubFmlyCd></Fmly></Domn></BkTxCd>
+        <NtryDtls><TxDtls>
+          <RmtInf><Ustrd>Gebühr für Revolut Business • Ausgaben App-Gebühren</Ustrd></RmtInf>
+          <AddtlTxInf>Gebühr für Revolut Business • Ausgaben App-Gebühren</AddtlTxInf>
+        </TxDtls></NtryDtls>
+      </Ntry>
+
+      <Ntry>
+        <Amt Ccy="CHF">1300.00</Amt>
+        <CdtDbtInd>DBIT</CdtDbtInd>
+        <Sts><Cd>BOOK</Cd></Sts>
+        <BookgDt><DtTm>2026-03-26T02:08:09.508Z</DtTm></BookgDt>
+        <ValDt><DtTm>2026-03-26T02:08:09.508Z</DtTm></ValDt>
+        <AcctSvcrRef>69c3f2bf7ef8af98a77c6ba85de1eab9</AcctSvcrRef>
+        <BkTxCd><Domn><Cd>PMNT</Cd><Fmly><Cd>ICDT</Cd><SubFmlyCd>NTAV</SubFmlyCd></Fmly></Domn></BkTxCd>
+        <NtryDtls><TxDtls>
+          <RltdPties>
+            <InitgPty><Pty><Nm>Test User One</Nm></Pty></InitgPty>
+            <Cdtr><Pty><Nm>Test Company GmbH</Nm></Pty></Cdtr>
+            <CdtrAcct><Id><IBAN>CH0000000000000000001</IBAN></Id></CdtrAcct>
+          </RltdPties>
+          <RmtInf><Ustrd>Vehicle purchase</Ustrd></RmtInf>
+          <AddtlTxInf>An Test Company GmbH • Vehicle purchase</AddtlTxInf>
+        </TxDtls></NtryDtls>
+      </Ntry>
+
+      <!--
+        FX inflow with embedded fee. The Chrgs block makes this the canonical
+        fixture entry for the FeeSplitter feature planned in v0.0.14:
+          gross income  = Amt + TtlChrgsAndTaxAmt = 2434.48 + 7.15 = 2441.63
+          fee expense   = TtlChrgsAndTaxAmt        =                  7.15
+          net effect    = Amt                      =                2434.48
+      -->
+      <Ntry>
+        <Amt Ccy="CHF">2434.48</Amt>
+        <CdtDbtInd>CRDT</CdtDbtInd>
+        <Sts><Cd>BOOK</Cd></Sts>
+        <BookgDt><DtTm>2026-03-25T14:34:35.101Z</DtTm></BookgDt>
+        <ValDt><DtTm>2026-03-25T14:34:35.101Z</DtTm></ValDt>
+        <AcctSvcrRef>69c3f27bc99ea57298c66630d7daaeab</AcctSvcrRef>
+        <BkTxCd><Domn><Cd>FORX</Cd><Fmly><Cd>SPOT</Cd><SubFmlyCd>NTAV</SubFmlyCd></Fmly></Domn></BkTxCd>
+        <AmtDtls><TxAmt>
+          <Amt Ccy="CHF">2434.48</Amt>
+          <CcyXchg>
+            <SrcCcy>CHF</SrcCcy>
+            <TrgtCcy>EUR</TrgtCcy>
+            <UnitCcy>CHF</UnitCcy>
+            <XchgRate>1.0918816544</XchgRate>
+          </CcyXchg>
+        </TxAmt></AmtDtls>
+        <Chrgs>
+          <TtlChrgsAndTaxAmt Ccy="CHF">7.15</TtlChrgsAndTaxAmt>
+        </Chrgs>
+        <NtryDtls><TxDtls>
+          <RltdPties><InitgPty><Pty><Nm>Test User Two</Nm></Pty></InitgPty></RltdPties>
+          <RmtInf><Ustrd>Main · EUR -&gt; Main · CHF</Ustrd></RmtInf>
+          <AddtlTxInf>Main · EUR -&gt; Main · CHF</AddtlTxInf>
+        </TxDtls></NtryDtls>
+      </Ntry>
+
+      <Ntry>
+        <Amt Ccy="CHF">10.00</Amt>
+        <CdtDbtInd>DBIT</CdtDbtInd>
+        <Sts><Cd>BOOK</Cd></Sts>
+        <BookgDt><DtTm>2026-03-12T15:12:15.361Z</DtTm></BookgDt>
+        <ValDt><DtTm>2026-03-12T15:12:15.361Z</DtTm></ValDt>
+        <AcctSvcrRef>69b0467d3b99a66f80c9ba58426ed75d</AcctSvcrRef>
+        <BkTxCd><Domn><Cd>PMNT</Cd><Fmly><Cd>CCRD</Cd><SubFmlyCd>POSP</SubFmlyCd></Fmly></Domn></BkTxCd>
+        <NtryDtls><TxDtls>
+          <RltdPties><InitgPty><Pty><Nm>Test User Two</Nm></Pty></InitgPty></RltdPties>
+          <RmtInf><Ustrd>Post Billingonline</Ustrd></RmtInf>
+          <CardTx><Card>
+            <CardBrnd><Id>VISA</Id></CardBrnd>
+            <AddtlCardData>400000******0001</AddtlCardData>
+          </Card></CardTx>
+          <AddtlTxInf>Post Billingonline</AddtlTxInf>
+        </TxDtls></NtryDtls>
+      </Ntry>
+
+      <Ntry>
+        <Amt Ccy="CHF">10.00</Amt>
+        <CdtDbtInd>DBIT</CdtDbtInd>
+        <Sts><Cd>BOOK</Cd></Sts>
+        <BookgDt><DtTm>2026-03-07T13:17:19.984Z</DtTm></BookgDt>
+        <ValDt><DtTm>2026-03-07T13:17:19.984Z</DtTm></ValDt>
+        <AcctSvcrRef>69a9b27c2a08a1f982eadaef861c5fcf</AcctSvcrRef>
+        <BkTxCd><Domn><Cd>PMNT</Cd><Fmly><Cd>CCRD</Cd><SubFmlyCd>POSP</SubFmlyCd></Fmly></Domn></BkTxCd>
+        <NtryDtls><TxDtls>
+          <RltdPties><InitgPty><Pty><Nm>Test User Two</Nm></Pty></InitgPty></RltdPties>
+          <RmtInf><Ustrd>Post Billingonline</Ustrd></RmtInf>
+          <CardTx><Card>
+            <CardBrnd><Id>VISA</Id></CardBrnd>
+            <AddtlCardData>400000******0001</AddtlCardData>
+          </Card></CardTx>
+          <AddtlTxInf>Post Billingonline</AddtlTxInf>
+        </TxDtls></NtryDtls>
+      </Ntry>
+
+      <Ntry>
+        <Amt Ccy="CHF">10.00</Amt>
+        <CdtDbtInd>DBIT</CdtDbtInd>
+        <Sts><Cd>BOOK</Cd></Sts>
+        <BookgDt><DtTm>2026-02-28T13:49:48.432Z</DtTm></BookgDt>
+        <ValDt><DtTm>2026-02-28T13:49:48.432Z</DtTm></ValDt>
+        <AcctSvcrRef>69a2f27cb69dad3882adc80fa8218aca</AcctSvcrRef>
+        <BkTxCd><Domn><Cd>ACMT</Cd><Fmly><Cd>OPCL</Cd><SubFmlyCd>FEES</SubFmlyCd></Fmly></Domn></BkTxCd>
+        <NtryDtls><TxDtls>
+          <RmtInf><Ustrd>Gebühr für Revolut Business • Gebühr für das Basic-Abo</Ustrd></RmtInf>
+          <AddtlTxInf>Gebühr für Revolut Business • Gebühr für das Basic-Abo</AddtlTxInf>
+        </TxDtls></NtryDtls>
+      </Ntry>
+
+      <Ntry>
+        <Amt Ccy="CHF">6.00</Amt>
+        <CdtDbtInd>DBIT</CdtDbtInd>
+        <Sts><Cd>BOOK</Cd></Sts>
+        <BookgDt><DtTm>2026-02-28T11:35:46.367Z</DtTm></BookgDt>
+        <ValDt><DtTm>2026-02-28T11:35:46.367Z</DtTm></ValDt>
+        <AcctSvcrRef>69a2d31230d7a3a88c7161952eefb6c3</AcctSvcrRef>
+        <BkTxCd><Domn><Cd>ACMT</Cd><Fmly><Cd>OPCL</Cd><SubFmlyCd>FEES</SubFmlyCd></Fmly></Domn></BkTxCd>
+        <NtryDtls><TxDtls>
+          <RmtInf><Ustrd>Gebühr für Revolut Business • Ausgaben App-Gebühren</Ustrd></RmtInf>
+          <AddtlTxInf>Gebühr für Revolut Business • Ausgaben App-Gebühren</AddtlTxInf>
+        </TxDtls></NtryDtls>
+      </Ntry>
+
+      <Ntry>
+        <Amt Ccy="CHF">10.00</Amt>
+        <CdtDbtInd>DBIT</CdtDbtInd>
+        <Sts><Cd>BOOK</Cd></Sts>
+        <BookgDt><DtTm>2026-01-28T11:37:48.885Z</DtTm></BookgDt>
+        <ValDt><DtTm>2026-01-28T11:37:48.885Z</DtTm></ValDt>
+        <AcctSvcrRef>6979f50c4b6bad7889b5900b5678a304</AcctSvcrRef>
+        <BkTxCd><Domn><Cd>ACMT</Cd><Fmly><Cd>OPCL</Cd><SubFmlyCd>FEES</SubFmlyCd></Fmly></Domn></BkTxCd>
+        <NtryDtls><TxDtls>
+          <RmtInf><Ustrd>Gebühr für Revolut Business • Gebühr für das Basic-Abo</Ustrd></RmtInf>
+          <AddtlTxInf>Gebühr für Revolut Business • Gebühr für das Basic-Abo</AddtlTxInf>
+        </TxDtls></NtryDtls>
+      </Ntry>
+
+      <Ntry>
+        <Amt Ccy="CHF">6.00</Amt>
+        <CdtDbtInd>DBIT</CdtDbtInd>
+        <Sts><Cd>BOOK</Cd></Sts>
+        <BookgDt><DtTm>2026-01-28T11:35:33.072Z</DtTm></BookgDt>
+        <ValDt><DtTm>2026-01-28T11:35:33.072Z</DtTm></ValDt>
+        <AcctSvcrRef>6979f485d78ca0d986b880048005f61a</AcctSvcrRef>
+        <BkTxCd><Domn><Cd>ACMT</Cd><Fmly><Cd>OPCL</Cd><SubFmlyCd>FEES</SubFmlyCd></Fmly></Domn></BkTxCd>
+        <NtryDtls><TxDtls>
+          <RmtInf><Ustrd>Gebühr für Revolut Business • Ausgaben App-Gebühren</Ustrd></RmtInf>
+          <AddtlTxInf>Gebühr für Revolut Business • Ausgaben App-Gebühren</AddtlTxInf>
+        </TxDtls></NtryDtls>
+      </Ntry>
+    </Stmt>
+  </BkToCstmrStmt>
+</Document>
