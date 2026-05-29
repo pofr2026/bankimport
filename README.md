@@ -158,6 +158,12 @@ Bei Fragen oder Problemen:
 
 Siehe [ChangeLog.md](ChangeLog.md) für detaillierte Änderungen.
 
+### Version 0.0.12
+- PHP-8.2-Warnungen bei optionalen CAMT.053-Branches (`RltdPties`, `RltdAgts`) behoben (sicherer `xmlText()`-Accessor)
+- CSV-Duplikaterkennung: Buchungstag wird in den `import_key` einbezogen — wiederkehrende identische Transaktionen (z. B. monatliche Festgebühr ohne Referenz) werden nicht mehr fälschlich als Duplikat erkannt. **Hinweis:** Bereits importierte CSV-Daten haben den alten Schlüssel; ein erneuter Import derselben Datei kann einmalig Duplikate erzeugen.
+- Neue Klasse `BankImport\ImportKey` (pure helper, ohne Dolibarr-Kopplung) bündelt die Import-Key-Generierung für CSV und XML
+- PHPUnit 10.5 als dev-dependency + Unit-Tests für die Dedup-Logik (`vendor/bin/phpunit` oder `composer test`)
+
 ### Version 0.0.11
 - Unterstützung für XML-Import im camt.053-Format (z. B. Revolut Business)
 - Automatische Format-Erkennung (CSV vs. XML) anhand des Datei-Inhalts

@@ -1,5 +1,21 @@
 {
     "require": {
         "vlucas/phpdotenv": "^5.6"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^10.5"
+    },
+    "autoload": {
+        "psr-4": {
+            "BankImport\\": "core/class/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "BankImport\\Tests\\": "tests/"
+        }
+    },
+    "scripts": {
+        "test": "phpunit"
     }
 }

@@ -18,6 +18,12 @@
 require_once DOL_DOCUMENT_ROOT.'/core/class/commonobject.class.php';
 require_once DOL_DOCUMENT_ROOT.'/compta/bank/class/account.class.php';
 
+// Pure helpers shipped with the module — required manually because Dolibarr's
+// runtime does not register our composer PSR-4 autoloader.
+require_once __DIR__ . '/ImportKey.php';
+
+use BankImport\ImportKey;
+
 /**
  * BankImport class
  */
@@ -334,24 +340,24 @@ class BankImport extends CommonObject
             }
 
             foreach ($ntry->NtryDtls->TxDtls as $tx) {
-                $piece = trim((string) $tx->RmtInf->Ustrd);
-                if ($piece === '') $piece = trim((string) $tx->AddtlTxInf);
+                $piece = $this->xmlText($tx, ['RmtInf', 'Ustrd']);
+                if ($piece === '') $piece = $this->xmlText($tx, ['AddtlTxInf']);
                 if ($piece !== '') {
                     $label = ($label === '') ? $piece : ($label . ' | ' . $piece);
                 }
 
-                $candName = trim((string) $tx->RltdPties->{$partyTag}->Nm);
+                $candName = $this->xmlText($tx, ['RltdPties', $partyTag, 'Nm']);
                 if ($candName === '') {
-                    $candName = trim((string) $tx->RltdPties->InitgPty->Pty->Nm);
+                    $candName = $this->xmlText($tx, ['RltdPties', 'InitgPty', 'Pty', 'Nm']);
                 }
                 if ($candName !== '' && $owner_other === '') $owner_other = $candName;
 
-                $candIban = trim((string) $tx->RltdPties->{$acctTag}->Id->IBAN);
+                $candIban = $this->xmlText($tx, ['RltdPties', $acctTag, 'Id', 'IBAN']);
                 if ($candIban !== '' && $iban_other === '') $iban_other = $candIban;
 
-                $candBic = trim((string) $tx->RltdAgts->{$agtTag}->FinInstnId->BICFI);
+                $candBic = $this->xmlText($tx, ['RltdAgts', $agtTag, 'FinInstnId', 'BICFI']);
                 if ($candBic === '') {
-                    $candBic = trim((string) $tx->RltdAgts->{$agtTag}->FinInstnId->BIC);
+                    $candBic = $this->xmlText($tx, ['RltdAgts', $agtTag, 'FinInstnId', 'BIC']);
                 }
                 if ($candBic !== '' && $bank_other === '') $bank_other = $candBic;
             }
@@ -363,10 +369,7 @@ class BankImport extends CommonObject
 
         $ref = '';
 
-        // import_key column is varchar(14); hash AcctSvcrRef to fit.
-        $importKey = (!empty($transactionId))
-            ? substr(sha1($transactionId), 0, 14)
-            : $this->generateImportKey(null, $iban_other, $owner_other, $amount, $label, $ref);
+        $importKey = ImportKey::build($transactionId, $iban_other, $owner_other, $amount, $label, $ref, $dateo);
 
         if ($this->isAlreadyImported($importKey)) {
             return 'skipped';
@@ -425,6 +428,43 @@ class BankImport extends CommonObject
         $ts = strtotime($dateString);
         if ($ts === false || $ts <= 0) return 0;
         return dol_mktime(0, 0, 0, (int) date('m', $ts), (int) date('d', $ts), (int) date('Y', $ts));
+    }
+
+    /**
+     * Safely walk a SimpleXML path and return the trimmed string value, or '' if any step is missing.
+     *
+     * Use this only for OPTIONAL CAMT.053 branches (RltdPties/RltdAgts and below). Mandatory
+     * branches (Amt, CdtDbtInd, BookgDt, ValDt) are accessed directly because they are
+     * guaranteed by the schema and a missing one is a real error worth surfacing as a warning.
+     *
+     * Why isset() instead of property_exists(): SimpleXMLElement overrides __isset() (SPL
+     * magic) so isset($node->Foo) correctly returns false when no <Foo> child exists and
+     * true when one does — including for empty containers like <Foo/>. property_exists()
+     * does not honor the magic and would always return false for dynamic children.
+     *
+     * Edge case (intentional behavior): if an empty container exists at an intermediate
+     * step (e.g. <RltdPties/>), isset() at the NEXT step returns false and we return ''.
+     * If the final step lands on an empty element, trim((string) $node) yields ''. Either
+     * way the caller gets '' for "not present" without distinguishing the two cases.
+     *
+     * Known limitation: CAMT.053 allows several elements to repeat (notably <Ustrd> inside
+     * <RmtInf> — one per line of description). This helper returns ONLY THE FIRST sibling
+     * at each step. For Revolut statements, Ustrd never repeats in practice, but other
+     * banks (e.g. Polish ING/mBank) may split descriptions across multiple Ustrd elements
+     * and that text would be silently truncated. Follow-up: when a bank with multi-line
+     * Ustrd is added, change the relevant call sites to iterate, not rely on xmlText().
+     *
+     * @param SimpleXMLElement|null $node Starting node
+     * @param string[] $path Sequence of child element names to traverse
+     * @return string Trimmed text content, or '' if the path doesn't resolve
+     */
+    private function xmlText($node, array $path)
+    {
+        foreach ($path as $key) {
+            if (!($node instanceof SimpleXMLElement) || !isset($node->{$key})) return '';
+            $node = $node->{$key};
+        }
+        return trim((string) $node);
     }
 
     /**
@@ -495,8 +535,8 @@ class BankImport extends CommonObject
         $iban_other = $data[$this->fieldMapping['counterparty_iban']];
         $owner_other = $data[$this->fieldMapping['counterparty_name']];
 
-        // Generate import key
-        $import_key = $this->generateImportKey($transaction_id, $iban_other, $owner_other, $amount, $label, $ref);
+        // Generate import key — booking date is included so recurring identical rows on different days don't collide.
+        $import_key = ImportKey::build($transaction_id, $iban_other, $owner_other, $amount, $label, $ref, $dateo);
 
         // Check if already imported
         if ($this->isAlreadyImported($import_key)) {
@@ -577,33 +617,6 @@ class BankImport extends CommonObject
         }
         $limited = substr($text, 0, $length);
         return $fixed ? str_pad($limited, $length) : $limited;
-    }
-
-    /**
-     * Generate import key
-     *
-     * @param string|null $transaction_id Transaction ID
-     * @param string $iban_other Counterparty IBAN
-     * @param string $owner_other Counterparty name
-     * @param float $amount Amount
-     * @param string $label Label
-     * @param string $ref Reference
-     * @return string Import key
-     */
-    private function generateImportKey($transaction_id, $iban_other, $owner_other, $amount, $label, $ref)
-    {
-        if (!empty($transaction_id)) {
-            return trim($transaction_id);
-        }
-
-        $key = implode('|', array(
-            trim($iban_other),
-            trim($owner_other),
-            number_format($amount, 2, '.', ''),
-            trim($label),
-            trim($ref)
-        ));
-        return substr(sha1($key), 0, 14);
     }
 
     /**
