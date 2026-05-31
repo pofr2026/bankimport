@@ -257,4 +257,100 @@ class StatementSummary
         $direction = (string) $node->CdtDbtInd;
         return $direction === 'DBIT' ? -$amount : $amount;
     }
+
+    /**
+     * Aggregate the per-statement rows we have actually stored in llx_bank
+     * for a given <Stmt> into the same shape as parse() emits, so verify()
+     * can pair the two element-for-element.
+     *
+     * Input is intentionally minimal — a list of plain rows already projected
+     * by the caller out of SQL: each row is ['ref' => ?string, 'amount' => float].
+     * Storage shape (note text, num_chq, num_releve, table prefix, currency
+     * column, …) deliberately stays out of this method so it remains a pure,
+     * Dolibarr-free unit testable against fabricated inputs. The caller is
+     * responsible for the SELECT and for projecting each row into this shape.
+     *
+     * Sign convention mirrors parse():
+     *  - Row 'amount' is signed as stored in llx_bank (positive credit, negative debit).
+     *  - credit_sum is the unsigned positive sum of per-entry signed totals > 0.
+     *  - debit_sum is the unsigned positive absolute value of per-entry totals < 0.
+     *  - net_entry = credit_sum − debit_sum, signed.
+     *  - entries[ref]['signed'] holds the SIGNED per-ref aggregate (so v0.0.14
+     *    splits that store gross + fee under one ref combine to the original Amt).
+     *
+     * Logical counts (count / credit_count / debit_count) are taken over the
+     * RESULT of aggregation, not the raw row list — a ref carrying two
+     * v0.0.14 split rows still counts as one logical entry. Rows that aggregate
+     * to exactly zero are included in count but excluded from credit/debit
+     * direction counts and sums (they net to nothing).
+     *
+     * Rows with null / empty 'ref' (CAMT.053 entries that lacked AcctSvcrRef
+     * in the source and were therefore stored without a per-entry handle) go
+     * to unaddressable_entries as a list — they still contribute to count and
+     * to sums but verify()'s per-ref check cannot address them individually.
+     *
+     * No rounding here: float drift is preserved and the half-cent tolerance
+     * lives exclusively in verify(), so we have one source of truth about
+     * numeric equality.
+     *
+     * @param list<array{ref: ?string, amount: float|int|string}> $rows
+     * @return array{count: int, credit_count: int, debit_count: int,
+     *               credit_sum: float, debit_sum: float, net_entry: float,
+     *               entries: array<string, array{signed: float}>,
+     *               unaddressable_entries: list<array{signed: float}>}
+     */
+    public static function aggregate(array $rows): array
+    {
+        // First pass: route each row into per-ref aggregation or the
+        // unaddressable bucket, summing signed amounts under shared refs.
+        $byRef = [];
+        $unaddressable = [];
+        foreach ($rows as $row) {
+            // Symmetric null-coalesce on both keys: caller contract (AGG-1) requires
+            // both, but if a future SELECT misprojects, fall back silently to 0/null
+            // rather than emit an "Undefined array key" warning that PHPUnit's
+            // failOnWarning would surface as a test failure for an arguably benign
+            // caller mistake. Aggregate stays pure regardless.
+            $signed = (float) ($row['amount'] ?? 0);
+            $ref = $row['ref'] ?? null;
+            if ($ref === null || $ref === '') {
+                $unaddressable[] = ['signed' => $signed];
+            } elseif (isset($byRef[$ref])) {
+                $byRef[$ref]['signed'] += $signed;
+            } else {
+                $byRef[$ref] = ['signed' => $signed];
+            }
+        }
+
+        // Second pass: derive direction counts and sums from the AGGREGATED
+        // entries (so v0.0.14 splits that net to one logical entry count
+        // and sum once, not per row). Zero-net entries are still part of
+        // count but contribute to neither direction.
+        $creditSum = 0.0;
+        $debitSum = 0.0;
+        $creditCount = 0;
+        $debitCount = 0;
+        $logicalEntries = array_merge(array_values($byRef), $unaddressable);
+        foreach ($logicalEntries as $entry) {
+            $signed = $entry['signed'];
+            if ($signed > 0) {
+                $creditSum += $signed;
+                $creditCount++;
+            } elseif ($signed < 0) {
+                $debitSum += -$signed;  // unsigned positive per AGG-5
+                $debitCount++;
+            }
+        }
+
+        return [
+            'count'                 => count($byRef) + count($unaddressable),
+            'credit_count'          => $creditCount,
+            'debit_count'           => $debitCount,
+            'credit_sum'            => $creditSum,
+            'debit_sum'             => $debitSum,
+            'net_entry'             => $creditSum - $debitSum,
+            'entries'               => $byRef,
+            'unaddressable_entries' => $unaddressable,
+        ];
+    }
 }
