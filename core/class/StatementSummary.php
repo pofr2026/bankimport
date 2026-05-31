@@ -15,6 +15,26 @@ namespace BankImport;
 class StatementSummary
 {
     /**
+     * Maximum absolute difference between two amounts that verify() still
+     * considers equal — half a cent. The single source of truth for numeric
+     * tolerance across the verification feature (AGG-6 / VERIFY-5). Inline
+     * abs() comparisons are forbidden; every amount check routes through
+     * amountsMatch() below.
+     */
+    private const AMOUNT_TOLERANCE = 0.005;
+
+    /**
+     * Compare two amounts with the half-cent tolerance. Single helper used
+     * by every sum / per-entry / unaddressable check in verify(), so the
+     * tolerance lives in exactly one place and can be tightened or loosened
+     * in one edit if practice demands it.
+     */
+    private static function amountsMatch(float $a, float $b): bool
+    {
+        return abs($a - $b) < self::AMOUNT_TOLERANCE;
+    }
+
+    /**
      * Parse a CAMT.053 document into one entry per <Stmt> block.
      *
      * The caller must pass a SimpleXMLElement whose default namespace has been
@@ -256,6 +276,234 @@ class StatementSummary
         $amount = (float) $node->Amt;
         $direction = (string) $node->CdtDbtInd;
         return $direction === 'DBIT' ? -$amount : $amount;
+    }
+
+    /**
+     * Pair a parse() result for one <Stmt> with the matching aggregate() result
+     * (from llx_bank rows WHERE num_releve = $expectedStmt['id']) and emit a
+     * flat list of check-result records driving the UI / audit log.
+     *
+     * One record per check type per Stmt, except per_entry which emits ZERO
+     * records when every expected ref matches and ONE record per mismatch
+     * (carrying 'ref') otherwise. Order matches the VERIFY-3 contract:
+     * count → credit_sum → debit_sum → net_entry → per_entry → unaddressable_sum.
+     *
+     * Each record:
+     *   ['check'    => string,    // 'count' | 'credit_sum' | 'debit_sum' | 'net_entry' | 'per_entry' | 'unaddressable_sum'
+     *    'stmt'     => string,    // $expectedStmt['id']
+     *    'status'   => 'ok' | 'mismatch' | 'skipped',
+     *    'ref'      => ?string,   // set only for per_entry detail records
+     *    'expected' => mixed,
+     *    'actual'   => mixed,
+     *    'detail'   => string]    // human-readable reason (especially for 'skipped' and per_entry)
+     *
+     * Degradation: when the corresponding expected field is null (PARSE-1 payoff —
+     * either the whole <TxsSummry> was absent, or a sub-block within it), the
+     * scalar check is emitted as status='skipped' instead of comparing against
+     * a fabricated zero. per_entry and unaddressable_sum always run because they
+     * derive from <Ntry> data, which is independent of <TxsSummry> presence.
+     *
+     * AGG-8: NO credit_count + debit_count == count cross-check is emitted —
+     * zero-net entries would break the identity by construction.
+     * AGG-10: per_entry compares ONLY ['signed'] from both sides; currency lives
+     * in parse() only and is paired at Stmt level by the caller.
+     *
+     * Single source of tolerance: every amount comparison goes through
+     * amountsMatch(), which uses self::AMOUNT_TOLERANCE. No inline abs() anywhere.
+     *
+     * @param array<string, mixed> $expectedStmt One element of parse()'s output list.
+     * @param array<string, mixed> $actual       aggregate() output for the same Stmt.
+     * @return list<array<string, mixed>> Check-result records; empty if both inputs
+     *                                    are empty (i.e. no checks ran).
+     */
+    public static function verify(array $expectedStmt, array $actual): array
+    {
+        $stmtId = (string) ($expectedStmt['id'] ?? '');
+        $checks = [];
+
+        // Check 1: count — int equality, no tolerance.
+        $checks[] = self::checkScalar(
+            'count',
+            $stmtId,
+            $expectedStmt['count'] ?? null,
+            $actual['count'] ?? null,
+            false
+        );
+
+        // Checks 2-4: float sums — tolerance compare.
+        foreach (['credit_sum', 'debit_sum', 'net_entry'] as $field) {
+            $checks[] = self::checkScalar(
+                $field,
+                $stmtId,
+                $expectedStmt[$field] ?? null,
+                $actual[$field] ?? null,
+                true
+            );
+        }
+
+        // Check 5: per_entry — emit one record per discrepant ref; no records
+        // when every expected ref matches the corresponding actual ref. Reads
+        // only ['signed'] from both sides per AGG-10 — currency lives on parse()
+        // entries but is intentionally absent from aggregate() entries.
+        foreach (self::checkPerEntries(
+            $stmtId,
+            $expectedStmt['entries'] ?? [],
+            $actual['entries'] ?? []
+        ) as $perEntry) {
+            $checks[] = $perEntry;
+        }
+
+        // Check 6: unaddressable_sum — refless entries cannot be addressed
+        // individually, so we compare their summed signed amounts only.
+        $expectedSum = self::sumSigned($expectedStmt['unaddressable_entries'] ?? []);
+        $actualSum   = self::sumSigned($actual['unaddressable_entries'] ?? []);
+        $matches = self::amountsMatch($expectedSum, $actualSum);
+        $checks[] = [
+            'check'    => 'unaddressable_sum',
+            'stmt'     => $stmtId,
+            'status'   => $matches ? 'ok' : 'mismatch',
+            'ref'      => null,
+            'expected' => $expectedSum,
+            'actual'   => $actualSum,
+            'detail'   => $matches
+                ? 'Refless entries sum matches within tolerance.'
+                : sprintf('Refless entries sum: expected %s, got %s.', self::fmt($expectedSum), self::fmt($actualSum)),
+        ];
+
+        return $checks;
+    }
+
+    /**
+     * Emit one scalar check record. When the expected value is null (parse()
+     * could not extract it because the relevant <TxsSummry> sub-block was
+     * absent — PARSE-1 payoff) we report status='skipped' so verify() does
+     * not fabricate a complaint against missing oracle data.
+     *
+     * @param mixed $expected
+     * @param mixed $actual
+     */
+    private static function checkScalar(
+        string $name,
+        string $stmtId,
+        $expected,
+        $actual,
+        bool $compareUsingTolerance
+    ): array {
+        if ($expected === null) {
+            return [
+                'check'    => $name,
+                'stmt'     => $stmtId,
+                'status'   => 'skipped',
+                'ref'      => null,
+                'expected' => null,
+                'actual'   => $actual,
+                'detail'   => "Skipped: expected value not available in parse() output (source XML omitted it).",
+            ];
+        }
+
+        $matches = $compareUsingTolerance
+            ? self::amountsMatch((float) $expected, (float) ($actual ?? 0))
+            : $expected === $actual;
+
+        return [
+            'check'    => $name,
+            'stmt'     => $stmtId,
+            'status'   => $matches ? 'ok' : 'mismatch',
+            'ref'      => null,
+            'expected' => $expected,
+            'actual'   => $actual,
+            'detail'   => $matches
+                ? 'Match.'
+                : sprintf("Expected %s, got %s.", self::fmt($expected), self::fmt($actual)),
+        ];
+    }
+
+    /**
+     * Compare expected entries map against actual entries map and yield one
+     * mismatch record per discrepant ref. Three kinds of discrepancy:
+     *   - ref in expected but missing in actual (possible false-skip on import)
+     *   - ref in both but signed amount differs (sign flip / wrong amount)
+     *   - ref in actual but missing in expected (duplicate / manual entry / wrong num_releve)
+     *
+     * Refs that match within tolerance emit no record at all (keeps the
+     * happy-path output short and lets the caller infer per_entry success
+     * from the absence of mismatch records).
+     *
+     * @return list<array<string, mixed>>
+     */
+    private static function checkPerEntries(string $stmtId, array $expectedEntries, array $actualEntries): array
+    {
+        $mismatches = [];
+
+        foreach ($expectedEntries as $ref => $expEntry) {
+            $expectedSigned = (float) $expEntry['signed'];
+            if (!isset($actualEntries[$ref])) {
+                $mismatches[] = [
+                    'check'    => 'per_entry',
+                    'stmt'     => $stmtId,
+                    'status'   => 'mismatch',
+                    'ref'      => (string) $ref,
+                    'expected' => $expectedSigned,
+                    'actual'   => null,
+                    'detail'   => 'Entry missing in actual (possible false-skip on import).',
+                ];
+                continue;
+            }
+            $actualSigned = (float) $actualEntries[$ref]['signed'];
+            if (!self::amountsMatch($expectedSigned, $actualSigned)) {
+                $mismatches[] = [
+                    'check'    => 'per_entry',
+                    'stmt'     => $stmtId,
+                    'status'   => 'mismatch',
+                    'ref'      => (string) $ref,
+                    'expected' => $expectedSigned,
+                    'actual'   => $actualSigned,
+                    'detail'   => sprintf(
+                        'Amount mismatch: expected %s, got %s.',
+                        self::fmt($expectedSigned),
+                        self::fmt($actualSigned)
+                    ),
+                ];
+            }
+        }
+
+        foreach ($actualEntries as $ref => $actEntry) {
+            if (!isset($expectedEntries[$ref])) {
+                $mismatches[] = [
+                    'check'    => 'per_entry',
+                    'stmt'     => $stmtId,
+                    'status'   => 'mismatch',
+                    'ref'      => (string) $ref,
+                    'expected' => null,
+                    'actual'   => (float) $actEntry['signed'],
+                    'detail'   => 'Entry in actual not present in expected source (duplicate, manual, or wrong num_releve).',
+                ];
+            }
+        }
+
+        return $mismatches;
+    }
+
+    /**
+     * Sum the 'signed' field across a list of unaddressable entries. Pulled
+     * out so both expected and actual sides go through the same path and
+     * the verify() body stays readable.
+     */
+    private static function sumSigned(array $entries): float
+    {
+        $sum = 0.0;
+        foreach ($entries as $entry) {
+            $sum += (float) ($entry['signed'] ?? 0);
+        }
+        return $sum;
+    }
+
+    /** Lightweight value-to-string for diagnostic 'detail' messages. */
+    private static function fmt($value): string
+    {
+        if ($value === null) return 'null';
+        if (is_float($value)) return sprintf('%.4f', $value);
+        return (string) $value;
     }
 
     /**
