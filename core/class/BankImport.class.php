@@ -21,8 +21,10 @@ require_once DOL_DOCUMENT_ROOT.'/compta/bank/class/account.class.php';
 // Pure helpers shipped with the module — required manually because Dolibarr's
 // runtime does not register our composer PSR-4 autoloader.
 require_once __DIR__ . '/ImportKey.php';
+require_once __DIR__ . '/StatementSummary.php';
 
 use BankImport\ImportKey;
+use BankImport\StatementSummary;
 
 /**
  * BankImport class
@@ -271,9 +273,12 @@ class BankImport extends CommonObject
 
         $idx = 0;
         foreach ($xml->BkToCstmrStmt->Stmt as $stmt) {
+            // <Stmt><Id> scopes every line of this statement via num_releve, so
+            // post-import verification can aggregate exactly the rows we wrote.
+            $numReleve = (string) $stmt->Id;
             foreach ($stmt->Ntry as $ntry) {
                 $idx++;
-                $importResult = $this->processXmlEntry($ntry, $idx);
+                $importResult = $this->processXmlEntry($ntry, $idx, $numReleve);
                 if ($importResult === true) {
                     $result['success']++;
                 } elseif ($importResult === 'skipped') {
@@ -286,9 +291,65 @@ class BankImport extends CommonObject
 
         if ($idx === 0) {
             $result['errors'][] = 'No transactions (Ntry) found in XML';
+            return $result;
         }
 
+        // Post-import verification: compare the bank's own summary blocks
+        // (<Bal>/<TxsSummry>) against what actually landed in llx_bank.
+        $result['verification'] = $this->verifyImport($xml);
+
         return $result;
+    }
+
+    /**
+     * Run statement verification for every <Stmt> in the parsed document and
+     * return a flat list of check-result records (see StatementSummary::verify).
+     *
+     * This is the thin Dolibarr-coupled glue around the pure StatementSummary
+     * pipeline: parse() the expectation from XML, read the actuals back out of
+     * llx_bank scoped by num_releve, aggregate(), then verify() each Stmt.
+     *
+     * @param SimpleXMLElement $xml Root <Document> element (default namespace already stripped)
+     * @return array<int, array<string, mixed>> Flat list of check-result records across all stmts
+     */
+    private function verifyImport($xml)
+    {
+        $checks = array();
+        foreach (StatementSummary::parse($xml) as $expectedStmt) {
+            $actual = $this->aggregateImportedState($expectedStmt['id']);
+            foreach (StatementSummary::verify($expectedStmt, $actual) as $record) {
+                $checks[] = $record;
+            }
+        }
+        return $checks;
+    }
+
+    /**
+     * Read back the rows we stored for one statement and fold them into the
+     * shape StatementSummary::verify() expects, via the pure aggregate() helper.
+     *
+     * Scoping is by num_releve = <Stmt><Id> on the configured account. The
+     * per-entry handle is num_chq, where the import writes the CAMT.053
+     * AcctSvcrRef (AGG-2); rows without it (none for Revolut) project to a
+     * null ref and land in aggregate()'s unaddressable bucket.
+     *
+     * @param string $numReleve The <Stmt><Id> used as num_releve at import time
+     * @return array<string, mixed> aggregate() output for this statement
+     */
+    private function aggregateImportedState($numReleve)
+    {
+        $rows = array();
+        $sql = "SELECT amount, num_chq FROM " . MAIN_DB_PREFIX . "bank"
+            . " WHERE fk_account = " . ((int) $this->accountid)
+            . " AND num_releve = '" . $this->db->escape($numReleve) . "'";
+        $resql = $this->db->query($sql);
+        if ($resql) {
+            while ($obj = $this->db->fetch_object($resql)) {
+                $ref = ($obj->num_chq !== null && $obj->num_chq !== '') ? $obj->num_chq : null;
+                $rows[] = array('ref' => $ref, 'amount' => (float) $obj->amount);
+            }
+        }
+        return StatementSummary::aggregate($rows);
     }
 
     /**
@@ -296,9 +357,10 @@ class BankImport extends CommonObject
      *
      * @param SimpleXMLElement $ntry Entry node
      * @param int $idx Entry index (1-based) for error messages
+     * @param string $numReleve Statement id (<Stmt><Id>) stored as num_releve for verification scoping
      * @return bool|string True on success, 'skipped' if duplicate, error message on failure
      */
-    private function processXmlEntry($ntry, $idx)
+    private function processXmlEntry($ntry, $idx, $numReleve = '')
     {
         global $user;
 
@@ -375,10 +437,26 @@ class BankImport extends CommonObject
             return 'skipped';
         }
 
-        $note = '';
+        // Build note from the transaction ref plus the counterparty IBAN.
+        // The IBAN used to be passed into addline()'s accountancycode slot
+        // (a pre-existing bug — position 10 is $accountancycode, not an IBAN
+        // field); it is preserved here in the private note instead so it is
+        // neither lost nor polluting the chart of accounts.
+        $noteParts = array();
         if (!empty($transactionId)) {
-            $note = 'AcctSvcrRef=' . $transactionId;
+            $noteParts[] = 'AcctSvcrRef=' . $transactionId;
         }
+        if ($iban_other !== '') {
+            $noteParts[] = 'CounterpartyIBAN=' . $iban_other;
+        }
+        $note = implode(' ', $noteParts);
+
+        // num_chq carries the AcctSvcrRef so post-import verification can scope
+        // per entry (AGG-2). The column is varchar(50); Revolut's AcctSvcrRef is
+        // 32 hex chars, well within range. A bank emitting a ref > 50 chars would
+        // be silently truncated by the DB — revisit with a guard if such a
+        // source is ever added.
+        $num_chq = $transactionId;
 
         $this->db->begin();
         try {
@@ -390,14 +468,14 @@ class BankImport extends CommonObject
                 'VIR',
                 $label,
                 $amount,
-                $ref,
+                $num_chq,
                 null, // categorie
                 $user,
                 $owner_other,
                 $bank_other,
-                $iban_other,
+                '',   // accountancycode (NOT the counterparty IBAN; see note above)
                 $datev,
-                null, // num_releve
+                $numReleve,
                 null, // amount_main_currency
                 $note
             );
@@ -563,9 +641,9 @@ class BankImport extends CommonObject
                 $user,
                 $owner_other,
                 $bank_other,
-                $iban_other,
+                '',   // accountancycode (NOT the counterparty IBAN; IBAN is kept in note via buildNote)
                 $datev,
-                null, // num_releve
+                null, // num_releve (CSV has no statement id; verification is XML-only)
                 null, // amount_main_currency
                 $note
             );
@@ -620,14 +698,24 @@ class BankImport extends CommonObject
     }
 
     /**
-     * Check if transaction is already imported
+     * Check if a transaction is already imported INTO THE TARGET ACCOUNT.
+     *
+     * The account scope is essential: a Revolut FX swap between the user's own
+     * accounts (e.g. "Main EUR -> Main CHF") emits the SAME AcctSvcrRef on both
+     * legs — the debit in the EUR account and the credit in the CHF account.
+     * Both legs are legitimate, distinct bank lines that must each import into
+     * their respective account. Without the fk_account filter the second leg
+     * would collide with the first on import_key and be silently dropped,
+     * losing one side of every cross-account FX swap.
      *
      * @param string $import_key Import key
-     * @return bool True if already imported
+     * @return bool True if already imported into this account
      */
     private function isAlreadyImported($import_key)
     {
-        $sql = "SELECT rowid FROM " . MAIN_DB_PREFIX . "bank WHERE import_key = '" . $this->db->escape($import_key) . "'";
+        $sql = "SELECT rowid FROM " . MAIN_DB_PREFIX . "bank"
+            . " WHERE import_key = '" . $this->db->escape($import_key) . "'"
+            . " AND fk_account = " . ((int) $this->accountid);
         $resql = $this->db->query($sql);
         if ($resql) {
             return $this->db->num_rows($resql) > 0;
@@ -666,6 +754,13 @@ class BankImport extends CommonObject
 
         if (!empty($data[$this->fieldMapping['creditor_id']])) {
             $note .= $sep . 'GlaeubigerId=' . $data[$this->fieldMapping['creditor_id']];
+            $sep = ' ';
+        }
+
+        // Counterparty IBAN goes into the note (not addline()'s accountancycode
+        // slot — see processRow), mirroring the XML path's CounterpartyIBAN= tag.
+        if (!empty($data[$this->fieldMapping['counterparty_iban']])) {
+            $note .= $sep . 'CounterpartyIBAN=' . $data[$this->fieldMapping['counterparty_iban']];
             $sep = ' ';
         }
 

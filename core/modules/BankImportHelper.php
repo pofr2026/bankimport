@@ -19,6 +19,14 @@ class BankImportHelper
     public static function getEnv($key, $default = null)
     {
         self::loadEnv();
-        return $_ENV[$key] ?? getenv($key) ?? $default;
+        if (isset($_ENV[$key])) {
+            return $_ENV[$key];
+        }
+        // getenv() returns false (not null) for an unset variable, and ?? only
+        // falls through on null — so the previous `getenv($key) ?? $default`
+        // returned false instead of the default on a clean install with no .env
+        // and no CI-provided value. Check for false explicitly.
+        $val = getenv($key);
+        return $val !== false ? $val : $default;
     }
 }

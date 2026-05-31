@@ -1,6 +1,16 @@
 # Changelog for bankimport module
 
 
+## 0.0.13
+
+- Add post-import statement verification for XML (CAMT.053): the bank's own `<Bal>` / `<TxsSummry>` blocks are compared against what actually landed in `llx_bank`, and the import screen shows a per-check result table (count, credit/debit sums, net, per-entry, unaddressable). Catches dropped entries, wrong signs and false-skips that unit tests cannot. Implemented as a pure `BankImport\StatementSummary` helper (parse / aggregate / verify) with 24 unit tests.
+- Store the CAMT.053 `<Stmt><Id>` as `num_releve` and the `AcctSvcrRef` as `num_chq` on each imported line, enabling the verification scoping above and Dolibarr's native bank reconciliation views.
+- Fix duplicate detection that ignored the bank account: a Revolut FX swap between the user's own accounts emits the same `AcctSvcrRef` on both legs (debit in one currency, credit in the other), so the second leg was silently dropped. Duplicate detection is now scoped per account (affects both XML and CSV imports).
+- Fix the counterparty IBAN being passed into `addline()`'s accountancy-code argument (a pre-existing slot mismatch) on both the XML and CSV paths; the IBAN is now preserved in the line's private note as `CounterpartyIBAN=`.
+- Fix `BankImportHelper::getEnv()` returning `getenv()`'s `false` instead of the supplied default when a variable is unset (`??` only falls through on null). On a clean install without a `.env` or CI-provided `VERSION`, the module now correctly falls back to the bundled default version.
+- **Note:** verification compares against rows scoped by `num_releve`, which earlier versions did not write. Re-importing a statement whose lines were imported before v0.0.13 (no `num_releve`) may report them as missing. Fresh imports from v0.0.13 onward verify correctly.
+
+
 ## 0.0.12
 
 - Fix PHP 8.2 warnings ("Attempt to read property X on null") when CAMT.053 entries omit optional branches (`RltdPties`, `RltdAgts`); introduced a safe `xmlText()` accessor for nested SimpleXML paths.

@@ -129,8 +129,68 @@ if ($action == 'upload') {
                     setEventMessages($error, null, 'errors');
                 }
             }
+
+            // Statement verification summary (XML/CAMT.053 only — CSV has no
+            // summary blocks). $result['verification'] is the flat list of
+            // check-result records produced by StatementSummary::verify().
+            if (!empty($result['verification'])) {
+                $mismatchCount = 0;
+                $skippedCount = 0;
+                foreach ($result['verification'] as $check) {
+                    if ($check['status'] === 'mismatch') {
+                        $mismatchCount++;
+                    } elseif ($check['status'] === 'skipped') {
+                        $skippedCount++;
+                    }
+                }
+                if ($mismatchCount > 0) {
+                    setEventMessages($langs->trans("BANKIMPORT_Verification_Failed", $mismatchCount), null, 'errors');
+                } elseif ($skippedCount > 0) {
+                    // All comparable checks passed, but some could not be run (e.g. the
+                    // bank omitted parts of the <TxsSummry> oracle) — surface honestly.
+                    setEventMessages($langs->trans("BANKIMPORT_Verification_PassedWithSkips", $skippedCount), null, 'warnings');
+                } else {
+                    setEventMessages($langs->trans("BANKIMPORT_Verification_AllPassed"), null, 'mesgs');
+                }
+            }
         }
     }
+}
+
+// Detailed verification table (rendered outside the action block so it shows
+// directly under the page title after an import). Each row is one check with
+// its status; mismatches and "not verifiable" (skipped) are highlighted.
+if (!empty($result['verification'])) {
+    $statusLabels = array(
+        'ok'       => $langs->trans("BANKIMPORT_Verification_Status_ok"),
+        'mismatch' => $langs->trans("BANKIMPORT_Verification_Status_mismatch"),
+        'skipped'  => $langs->trans("BANKIMPORT_Verification_Status_skipped"),
+    );
+    $statusColors = array('ok' => 'green', 'mismatch' => 'red', 'skipped' => '#999');
+
+    print load_fiche_titre($langs->trans("BANKIMPORT_Verification_Title"), '', '');
+    print '<table class="noborder centpercent">';
+    print '<tr class="liste_titre">';
+    print '<td>'.$langs->trans("BANKIMPORT_Verification_Check").'</td>';
+    print '<td>'.$langs->trans("BANKIMPORT_Verification_Status").'</td>';
+    print '<td>'.$langs->trans("BANKIMPORT_Verification_Detail").'</td>';
+    print '</tr>';
+    foreach ($result['verification'] as $check) {
+        $status = $check['status'];
+        $checkLabel = $check['check'];
+        if (!empty($check['ref'])) {
+            $checkLabel .= ' ('.dol_escape_htmltag($check['ref']).')';
+        }
+        $color = isset($statusColors[$status]) ? $statusColors[$status] : 'black';
+        $statusText = isset($statusLabels[$status]) ? $statusLabels[$status] : $status;
+        print '<tr class="oddeven">';
+        print '<td>'.dol_escape_htmltag($checkLabel).'</td>';
+        print '<td style="color:'.$color.';font-weight:bold;">'.dol_escape_htmltag($statusText).'</td>';
+        print '<td>'.dol_escape_htmltag($check['detail']).'</td>';
+        print '</tr>';
+    }
+    print '</table>';
+    print '<br>';
 }
 
 // Display form

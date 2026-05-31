@@ -158,6 +158,13 @@ Bei Fragen oder Problemen:
 
 Siehe [ChangeLog.md](ChangeLog.md) für detaillierte Änderungen.
 
+### Version 0.0.13
+- Auszugsprüfung nach dem Import (XML/CAMT.053): die `<Bal>`/`<TxsSummry>`-Blöcke der Bank werden mit den tatsächlich importierten Buchungen verglichen; das Import-Formular zeigt eine Prüftabelle (Anzahl, Soll-/Haben-Summen, Netto, pro Buchung). Reine Helper-Klasse `BankImport\StatementSummary` mit 24 Unit-Tests
+- `<Stmt><Id>` wird als `num_releve`, `AcctSvcrRef` als `num_chq` pro Zeile gespeichert (Prüfung + native Dolibarr-Kontoabstimmung)
+- Duplikaterkennung jetzt pro Bankkonto: beide Seiten eines Revolut-Währungstauschs (gleiche `AcctSvcrRef` in zwei Konten) werden korrekt importiert, nicht mehr fälschlich übersprungen
+- Korrektur: Gegenpartei-IBAN landete im accountancy-code-Argument von `addline()` (XML und CSV) — jetzt in der Notiz als `CounterpartyIBAN=`
+- **Hinweis:** Die Prüfung vergleicht über `num_releve`; bereits vor v0.0.13 importierte Zeilen haben kein `num_releve`. Ein erneuter Import solcher Auszüge kann sie als fehlend melden. Neue Importe ab v0.0.13 werden korrekt geprüft
+
 ### Version 0.0.12
 - PHP-8.2-Warnungen bei optionalen CAMT.053-Branches (`RltdPties`, `RltdAgts`) behoben (sicherer `xmlText()`-Accessor)
 - CSV-Duplikaterkennung: Buchungstag wird in den `import_key` einbezogen — wiederkehrende identische Transaktionen (z. B. monatliche Festgebühr ohne Referenz) werden nicht mehr fälschlich als Duplikat erkannt. **Hinweis:** Bereits importierte CSV-Daten haben den alten Schlüssel; ein erneuter Import derselben Datei kann einmalig Duplikate erzeugen.
