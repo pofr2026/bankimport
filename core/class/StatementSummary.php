@@ -279,6 +279,115 @@ class StatementSummary
     }
 
     /**
+     * Stmt-level gate that runs BEFORE verify(), deciding whether per-check
+     * verification can produce trustworthy results at all. It exists because
+     * three distinct runtime conditions otherwise collapse into the same
+     * misleading symptom: an empty (or untrustworthy) actual-state fed to
+     * verify() yields a 'mismatch' storm — every expected entry reported
+     * MISSING — that hides the real cause from the user.
+     *
+     * The coupled caller (BankImport::verifyImport) supplies the runtime facts
+     * it observed while reading actuals back out of llx_bank; this method stays
+     * pure so the policy is unit-testable without a database.
+     *
+     * Returns either:
+     *   - a single disposition record that REPLACES the normal verify() output
+     *     for this Stmt (status 'error' or 'skipped'), or
+     *   - null, meaning the preconditions are sound — the caller runs verify().
+     *
+     * Priority (highest first), each mapping to a reviewer finding:
+     *   1. $queryFailed (#1) → 'error'. A failed SELECT read back no rows;
+     *      reporting mismatches would blame the data for an infrastructure
+     *      fault. The concrete DB error text is the caller's to attach (only it
+     *      owns $this->db->lasterror()).
+     *   2. $scopeEmpty (#4) → 'skipped'. num_releve = '' (a CAMT.053 file missing
+     *      the mandatory <Stmt><Id>) makes WHERE num_releve = '' match every
+     *      prior empty-id row, so even a non-empty result set is untrustworthy.
+     *   3. $rowsFound === 0 while the Stmt expected rows (#2) → 'skipped'. Almost
+     *      always a re-import of data stored before v0.0.13 added per-statement
+     *      scoping (old rows have num_releve NULL/''), so nothing matches the new
+     *      scope. One honest "could not locate imported rows" beats N per-entry
+     *      MISSING records. This fires ONLY at zero rows: when SOME rows are
+     *      present, verify()'s per_entry check still surfaces partial false-skips,
+     *      which is the headline reason verification exists.
+     *
+     * A Stmt that legitimately expected nothing (no entries, no unaddressable,
+     * count 0/null) and found zero rows is consistent, not anomalous: returns
+     * null so verify() confirms the clean empty-vs-empty match.
+     *
+     * @param array<string, mixed> $expectedStmt One element of parse()'s output list.
+     * @param bool $queryFailed Whether the caller's read-back SELECT returned false.
+     * @param bool $scopeEmpty  Whether the scoping key (num_releve = <Stmt><Id>) was ''.
+     * @param int  $rowsFound   Number of llx_bank rows the caller read for this Stmt.
+     * @return array<string, mixed>|null Disposition record, or null to run verify().
+     */
+    public static function verificationPrecondition(
+        array $expectedStmt,
+        bool $queryFailed,
+        bool $scopeEmpty,
+        int $rowsFound
+    ): ?array {
+        $stmtId = (string) ($expectedStmt['id'] ?? '');
+
+        if ($queryFailed) {
+            return self::disposition(
+                $stmtId,
+                'error',
+                'Could not read back the imported rows for this statement (database error); verification did not run.'
+            );
+        }
+
+        if ($scopeEmpty) {
+            return self::disposition(
+                $stmtId,
+                'skipped',
+                'Statement has no <Id>, so imported rows cannot be scoped reliably (num_releve would match unrelated rows); verification skipped.'
+            );
+        }
+
+        if ($rowsFound === 0 && self::stmtExpectsRows($expectedStmt)) {
+            return self::disposition(
+                $stmtId,
+                'skipped',
+                'No imported rows found for this statement id (num_releve). Likely a re-import of data stored before per-statement scoping (v0.0.13); verification skipped.'
+            );
+        }
+
+        return null;
+    }
+
+    /** Build a stmt-level disposition record in the shared 8-field verify() shape. */
+    private static function disposition(string $stmtId, string $status, string $detail): array
+    {
+        return [
+            'check'    => 'verification',
+            'stmt'     => $stmtId,
+            'status'   => $status,
+            'ref'      => null,
+            'expected' => null,
+            'actual'   => null,
+            'detail'   => $detail,
+        ];
+    }
+
+    /**
+     * Whether a parsed Stmt expected any rows to be imported — true if it has
+     * any ref entries, any unaddressable entries, or a positive TxsSummry count.
+     * Distinguishes "zero rows is an anomaly" (#2) from "zero rows is correct
+     * for an empty statement".
+     */
+    private static function stmtExpectsRows(array $expectedStmt): bool
+    {
+        if (!empty($expectedStmt['entries'])) {
+            return true;
+        }
+        if (!empty($expectedStmt['unaddressable_entries'])) {
+            return true;
+        }
+        return (int) ($expectedStmt['count'] ?? 0) > 0;
+    }
+
+    /**
      * Pair a parse() result for one <Stmt> with the matching aggregate() result
      * (from llx_bank rows WHERE num_releve = $expectedStmt['id']) and emit a
      * flat list of check-result records driving the UI / audit log.

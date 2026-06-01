@@ -76,6 +76,12 @@ $action = GETPOST('action', 'alpha');
 // Initialize BankImport object
 $bankImport = new BankImport($db);
 
+// processFile()'s outcome. Declared here so the verification table block far
+// below (rendered outside the action branch) reads a defined value on a plain
+// GET. empty() already tolerates an unset variable, so this is for clarity and
+// static analysis, not to silence a runtime warning.
+$result = array();
+
 // Handle form submission
 if ($action == 'upload') {
     // Validate required fields first
@@ -136,20 +142,30 @@ if ($action == 'upload') {
             if (!empty($result['verification'])) {
                 $mismatchCount = 0;
                 $skippedCount = 0;
+                $errorCount = 0;
                 foreach ($result['verification'] as $check) {
                     if ($check['status'] === 'mismatch') {
                         $mismatchCount++;
                     } elseif ($check['status'] === 'skipped') {
                         $skippedCount++;
+                    } elseif ($check['status'] === 'error') {
+                        $errorCount++;
                     }
+                }
+                // 'error' (DB / unscopable statement) is the most actionable
+                // root cause, so it is always surfaced, independently of any
+                // mismatch tally. It also suppresses the optimistic
+                // "all passed" / "passed with skips" lines below.
+                if ($errorCount > 0) {
+                    setEventMessages($langs->trans("BANKIMPORT_Verification_Error", $errorCount), null, 'errors');
                 }
                 if ($mismatchCount > 0) {
                     setEventMessages($langs->trans("BANKIMPORT_Verification_Failed", $mismatchCount), null, 'errors');
-                } elseif ($skippedCount > 0) {
+                } elseif ($skippedCount > 0 && $errorCount === 0) {
                     // All comparable checks passed, but some could not be run (e.g. the
                     // bank omitted parts of the <TxsSummry> oracle) — surface honestly.
                     setEventMessages($langs->trans("BANKIMPORT_Verification_PassedWithSkips", $skippedCount), null, 'warnings');
-                } else {
+                } elseif ($errorCount === 0 && $skippedCount === 0) {
                     setEventMessages($langs->trans("BANKIMPORT_Verification_AllPassed"), null, 'mesgs');
                 }
             }
@@ -165,8 +181,9 @@ if (!empty($result['verification'])) {
         'ok'       => $langs->trans("BANKIMPORT_Verification_Status_ok"),
         'mismatch' => $langs->trans("BANKIMPORT_Verification_Status_mismatch"),
         'skipped'  => $langs->trans("BANKIMPORT_Verification_Status_skipped"),
+        'error'    => $langs->trans("BANKIMPORT_Verification_Status_error"),
     );
-    $statusColors = array('ok' => 'green', 'mismatch' => 'red', 'skipped' => '#999');
+    $statusColors = array('ok' => 'green', 'mismatch' => 'red', 'skipped' => '#999', 'error' => 'red');
 
     print load_fiche_titre($langs->trans("BANKIMPORT_Verification_Title"), '', '');
     print '<table class="noborder centpercent">';

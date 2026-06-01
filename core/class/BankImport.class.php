@@ -307,7 +307,10 @@ class BankImport extends CommonObject
      *
      * This is the thin Dolibarr-coupled glue around the pure StatementSummary
      * pipeline: parse() the expectation from XML, read the actuals back out of
-     * llx_bank scoped by num_releve, aggregate(), then verify() each Stmt.
+     * llx_bank scoped by num_releve, run the verificationPrecondition() gate
+     * (which short-circuits DB errors / unscopable / zero-row statements into a
+     * single 'error'/'skipped' record), then aggregate() + verify() each Stmt
+     * whose preconditions are sound.
      *
      * @param SimpleXMLElement $xml Root <Document> element (default namespace already stripped)
      * @return array<int, array<string, mixed>> Flat list of check-result records across all stmts
@@ -316,7 +319,35 @@ class BankImport extends CommonObject
     {
         $checks = array();
         foreach (StatementSummary::parse($xml) as $expectedStmt) {
-            $actual = $this->aggregateImportedState($expectedStmt['id']);
+            $numReleve = (string) $expectedStmt['id'];
+            $scopeEmpty = ($numReleve === '');
+
+            // Read the actuals back — but only when the statement is scopable.
+            // An empty num_releve (statement without <Id>) would run
+            // WHERE num_releve = '' and scan/aggregate unrelated legacy rows,
+            // only for the gate below to discard the result as 'skipped'. Skip
+            // the query and feed the gate an empty read instead.
+            $read = $scopeEmpty
+                ? array('query_failed' => false, 'rows' => array())
+                : $this->readImportedRows($numReleve);
+
+            // Gate before verify(): a DB error, an unscopable statement (empty
+            // <Id>), or zero rows under a real scope all collapse into a
+            // misleading per-entry "missing" storm if fed straight into
+            // verify(). The pure precondition turns each into one honest
+            // 'error'/'skipped' disposition instead (reviewer findings #1/#2/#4).
+            $disposition = StatementSummary::verificationPrecondition(
+                $expectedStmt,
+                $read['query_failed'],
+                $scopeEmpty,
+                count($read['rows'])
+            );
+            if ($disposition !== null) {
+                $checks[] = $disposition;
+                continue;
+            }
+
+            $actual = StatementSummary::aggregate($read['rows']);
             foreach (StatementSummary::verify($expectedStmt, $actual) as $record) {
                 $checks[] = $record;
             }
@@ -325,8 +356,17 @@ class BankImport extends CommonObject
     }
 
     /**
-     * Read back the rows we stored for one statement and fold them into the
-     * shape StatementSummary::verify() expects, via the pure aggregate() helper.
+     * Read back the llx_bank rows we stored for one statement, projected into
+     * the minimal shape StatementSummary::aggregate() consumes, alongside the
+     * query outcome so the caller can distinguish a genuine empty result from a
+     * failed query. The previous version swallowed query failures (if ($resql)
+     * with no else), so a DB error silently became zero rows and verify()
+     * misreported it as "every expected entry is missing" (reviewer finding #1).
+     *
+     * On query failure the concrete DBMS error is logged via dol_syslog() for
+     * the operator; it is deliberately NOT returned for display, so the
+     * user-facing 'error' disposition stays generic and does not leak SQL or
+     * schema structure to anyone holding the bankimport->import right.
      *
      * Scoping is by num_releve = <Stmt><Id> on the configured account. The
      * per-entry handle is num_chq, where the import writes the CAMT.053
@@ -334,22 +374,27 @@ class BankImport extends CommonObject
      * null ref and land in aggregate()'s unaddressable bucket.
      *
      * @param string $numReleve The <Stmt><Id> used as num_releve at import time
-     * @return array<string, mixed> aggregate() output for this statement
+     * @return array{query_failed: bool, rows: list<array{ref: ?string, amount: float}>}
      */
-    private function aggregateImportedState($numReleve)
+    private function readImportedRows($numReleve)
     {
         $rows = array();
         $sql = "SELECT amount, num_chq FROM " . MAIN_DB_PREFIX . "bank"
             . " WHERE fk_account = " . ((int) $this->accountid)
             . " AND num_releve = '" . $this->db->escape($numReleve) . "'";
         $resql = $this->db->query($sql);
-        if ($resql) {
-            while ($obj = $this->db->fetch_object($resql)) {
-                $ref = ($obj->num_chq !== null && $obj->num_chq !== '') ? $obj->num_chq : null;
-                $rows[] = array('ref' => $ref, 'amount' => (float) $obj->amount);
-            }
+        if (!$resql) {
+            // Surface the failure as query_failed (verify() would otherwise read
+            // zero rows as "every expected entry is missing"); log the concrete
+            // DBMS error for the operator rather than showing it to the user.
+            dol_syslog(__CLASS__ . '::readImportedRows ' . $this->db->lasterror(), LOG_ERR);
+            return array('query_failed' => true, 'rows' => $rows);
         }
-        return StatementSummary::aggregate($rows);
+        while ($obj = $this->db->fetch_object($resql)) {
+            $ref = ($obj->num_chq !== null && $obj->num_chq !== '') ? $obj->num_chq : null;
+            $rows[] = array('ref' => $ref, 'amount' => (float) $obj->amount);
+        }
+        return array('query_failed' => false, 'rows' => $rows);
     }
 
     /**
