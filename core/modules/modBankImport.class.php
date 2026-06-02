@@ -15,7 +15,7 @@ class modBankImport extends DolibarrModules
         global $langs, $conf;
         $this->db = $db;
 
-        $this->version = BankImportHelper::getEnv('VERSION', '0.0.15');
+        $this->version = BankImportHelper::getEnv('VERSION', '0.0.16');
 
         // Unique ID (custom modules > 100000)
         $this->numero = 104001;

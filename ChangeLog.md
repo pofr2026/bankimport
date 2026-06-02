@@ -1,6 +1,14 @@
 # Changelog for bankimport module
 
 
+## 0.0.16
+
+- Add an import preview: uploading a statement now shows every line that would be imported — with a per-line new/duplicate status and any embedded-fee splits highlighted — and writes nothing until you press **Confirm**; **Cancel** discards it. This removes the "imported into the wrong account, now delete it all by hand" trap. Implemented as a two-step preview→commit flow that parks the upload server-side and re-parses it on confirm, so what you preview is exactly what gets written.
+- Add a per-import **Split fees** checkbox on the import form that overrides the global `BANKIMPORT_SPLIT_FEES` setting for that single import (the global stays the default).
+- Duplicate detection in the preview matches the commit exactly: a line is flagged as duplicate against both already-imported rows and earlier rows within the same file, so the preview counts equal what the import will actually write and skip. Split entries show the principal and the broken-out fee line grouped with a colour accent.
+- Internals: the per-entry line-building logic (amount, label, counterparty, note, fee split and import key) is extracted into a new pure `BankImport\EntryPlan` helper covered by 7 unit tests, now shared by both the import and the preview so they cannot drift apart. The `import_key` derivation is byte-identical to previous versions, so duplicate detection and re-imports are unaffected. Uploaded files left unconfirmed are garbage-collected after an hour.
+
+
 ## 0.0.15
 
 - Fix the module configuration page being unreachable: `config_page_url` was empty, so Dolibarr showed no configure (gear) icon for the module on the Modules list and `admin/setup.php` could not be opened. This left the `BANKIMPORT_SPLIT_FEES` toggle added in 0.0.14 inaccessible from the UI (it could only be changed directly in the database). The setup page is now linked again so the toggle is reachable.
