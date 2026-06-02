@@ -22,9 +22,11 @@ require_once DOL_DOCUMENT_ROOT.'/compta/bank/class/account.class.php';
 // runtime does not register our composer PSR-4 autoloader.
 require_once __DIR__ . '/ImportKey.php';
 require_once __DIR__ . '/StatementSummary.php';
+require_once __DIR__ . '/FeeSplitter.php';
 
 use BankImport\ImportKey;
 use BankImport\StatementSummary;
+use BankImport\FeeSplitter;
 
 /**
  * BankImport class
@@ -476,17 +478,11 @@ class BankImport extends CommonObject
 
         $ref = '';
 
-        $importKey = ImportKey::build($transactionId, $iban_other, $owner_other, $amount, $label, $ref, $dateo);
-
-        if ($this->isAlreadyImported($importKey)) {
-            return 'skipped';
-        }
-
-        // Build note from the transaction ref plus the counterparty IBAN.
-        // The IBAN used to be passed into addline()'s accountancycode slot
-        // (a pre-existing bug — position 10 is $accountancycode, not an IBAN
-        // field); it is preserved here in the private note instead so it is
-        // neither lost nor polluting the chart of accounts.
+        // Build the private note from the transaction ref plus the counterparty IBAN.
+        // The IBAN used to be passed into addline()'s accountancycode slot (a pre-existing
+        // bug — position 10 is $accountancycode, not an IBAN field); it lives in the note
+        // instead so it is neither lost nor polluting the chart of accounts. When an entry
+        // is split into principal + fee, both lines share this same note.
         $noteParts = array();
         if (!empty($transactionId)) {
             $noteParts[] = 'AcctSvcrRef=' . $transactionId;
@@ -496,46 +492,113 @@ class BankImport extends CommonObject
         }
         $note = implode(' ', $noteParts);
 
-        // num_chq carries the AcctSvcrRef so post-import verification can scope
-        // per entry (AGG-2). The column is varchar(50); Revolut's AcctSvcrRef is
-        // 32 hex chars, well within range. A bank emitting a ref > 50 chars would
-        // be silently truncated by the DB — revisit with a guard if such a
-        // source is ever added.
+        // num_chq carries the AcctSvcrRef so post-import verification can scope per entry
+        // (AGG-2). The column is varchar(50); Revolut's AcctSvcrRef is 32 hex chars, well
+        // within range. Both lines of a fee split keep the SAME num_chq (the original ref)
+        // so StatementSummary::aggregate() folds them back into one logical entry equal to
+        // the original Amt; the two lines are told apart instead by their import keys.
         $num_chq = $transactionId;
+
+        // v0.0.14: when enabled, an entry whose CAMT.053 <Chrgs> records an embedded fee in
+        // the entry's own currency is posted as two bank lines (principal + fee) that sum
+        // to the original Amt. FeeSplitter is pure and returns null whenever there is
+        // nothing to split (no Chrgs, zero, or a cross-currency fee that belongs to the
+        // other FX leg), so the ordinary single-line path stays the default.
+        $split = getDolGlobalInt('BANKIMPORT_SPLIT_FEES', 0) ? FeeSplitter::extract($ntry) : null;
+
+        if ($split === null) {
+            $lines = array(array(
+                'amount'     => $amount,
+                'label'      => $label,
+                'import_key' => ImportKey::build($transactionId, $iban_other, $owner_other, $amount, $label, $ref, $dateo),
+            ));
+        } else {
+            // The two lines MUST carry different import keys, or the dedup check would drop
+            // the second as a duplicate of the first: ImportKey::build() hashes only the
+            // AcctSvcrRef when one is present and ignores the amount, so we salt the fee
+            // line's ref with ':fee'. With no ref the composite key already differs (the
+            // fee line has a different amount and label).
+            $feeRef = ($transactionId !== '') ? $transactionId . ':fee' : '';
+            $feeLabel = $this->buildFeeLabel($label);
+            $lines = array(
+                array(
+                    'amount'     => $split['main_amount'],
+                    'label'      => $label,
+                    'import_key' => ImportKey::build($transactionId, $iban_other, $owner_other, $split['main_amount'], $label, $ref, $dateo),
+                ),
+                array(
+                    'amount'     => $split['fee_amount'],
+                    'label'      => $feeLabel,
+                    'import_key' => ImportKey::build($feeRef, $iban_other, $owner_other, $split['fee_amount'], $feeLabel, $ref, $dateo),
+                ),
+            );
+        }
+
+        // Dedup on the principal (first) line. Both lines are written atomically below, so
+        // the principal key's presence means the whole entry was already imported. This also
+        // keeps re-imports idempotent if the split setting is later toggled: FeeSplitter only
+        // splits entries that carry an AcctSvcrRef, so a split principal is always keyed by the
+        // bare ref hash (identical to the unsplit single line), while entries without a ref are
+        // never split and stay on their stable amount-composite key in both modes.
+        if ($this->isAlreadyImported($lines[0]['import_key'])) {
+            return 'skipped';
+        }
 
         $this->db->begin();
         try {
             $account = new Account($this->db);
             $account->fetch($this->accountid);
 
-            $bankline_id = $account->addline(
-                $dateo,
-                'VIR',
-                $label,
-                $amount,
-                $num_chq,
-                null, // categorie
-                $user,
-                $owner_other,
-                $bank_other,
-                '',   // accountancycode (NOT the counterparty IBAN; see note above)
-                $datev,
-                $numReleve,
-                null, // amount_main_currency
-                $note
-            );
+            foreach ($lines as $line) {
+                $bankline_id = $account->addline(
+                    $dateo,
+                    'VIR',
+                    $line['label'],
+                    $line['amount'],
+                    $num_chq,
+                    null, // categorie
+                    $user,
+                    $owner_other,
+                    $bank_other,
+                    '',   // accountancycode (NOT the counterparty IBAN; see note above)
+                    $datev,
+                    $numReleve,
+                    null, // amount_main_currency
+                    $note
+                );
 
-            if ($bankline_id > 0) {
-                $this->updateImportKey($bankline_id, $importKey);
-                $this->db->commit();
-                return true;
+                if ($bankline_id <= 0) {
+                    $this->db->rollback();
+                    return $account->error ?: 'Unknown error while inserting bank line';
+                }
+                $this->updateImportKey($bankline_id, $line['import_key']);
             }
-            $this->db->rollback();
-            return $account->error ?: 'Unknown error while inserting bank line';
+
+            $this->db->commit();
+            return true;
         } catch (Exception $e) {
             $this->db->rollback();
             return $e->getMessage();
         }
+    }
+
+    /**
+     * Compose the stored label for a broken-out fee line. The base text comes from the
+     * bankimport lang domain (loaded by import.php for this request); the originating
+     * payment's label is appended for traceability so a reader can tell which transaction
+     * the fee belongs to. The result is length-clamped like any other stored label.
+     *
+     * @param string $baseLabel The principal line's label (may be '').
+     * @return string Length-limited fee line label.
+     */
+    private function buildFeeLabel($baseLabel)
+    {
+        global $langs;
+        $text = $langs->trans('BANKIMPORT_FeeLineLabel');
+        if ($baseLabel !== '') {
+            $text .= ': ' . $baseLabel;
+        }
+        return $this->limitString($text);
     }
 
     /**

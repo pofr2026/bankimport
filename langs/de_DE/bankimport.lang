@@ -56,3 +56,6 @@ BANKIMPORT_Verification_Status_ok=OK
 BANKIMPORT_Verification_Status_mismatch=Abweichung
 BANKIMPORT_Verification_Status_skipped=Nicht prüfbar
 BANKIMPORT_Verification_Status_error=Fehler
+BANKIMPORT_FeeLineLabel=Bankgebühr
+BANKIMPORT_Setup_SplitFees=Eingebettete Gebühren als separate Zeile ausweisen
+BANKIMPORT_Setup_SplitFees_Help=Wenn ein CAMT.053-Eintrag eine eingebettete Gebühr (z. B. eine Revolut-FX-Gebühr) in der Kontowährung enthält, wird sie als zweite Bankzeile gebucht, damit die Gebühr separat sichtbar ist. Die beiden Zeilen ergeben in Summe immer den ursprünglichen Transaktionsbetrag. Fremdwährungsgebühren (auf der anderen Seite eines FX-Transfers belastet) werden nie aufgeteilt.

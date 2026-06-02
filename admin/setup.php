@@ -60,12 +60,15 @@ if (!$user->admin) {
 $langs->load("admin");
 $langs->load("bankimport@bankimport");
 
+require_once DOL_DOCUMENT_ROOT.'/core/class/html.form.class.php';
+$form = new Form($db);
+
 // Handle form submission
 $action = GETPOST('action', 'alpha');
 $token = GETPOST('token', 'alpha');
 
 if ($action == 'update' && $token) {
-    // Handle configuration updates here
+    dolibarr_set_const($db, 'BANKIMPORT_SPLIT_FEES', GETPOSTINT('BANKIMPORT_SPLIT_FEES'), 'chaine', 0, '', $conf->entity);
     setEventMessages($langs->trans("SetupSaved"), null, 'mesgs');
 }
 
@@ -112,6 +115,11 @@ print '</tr>';
 print '<tr class="oddeven">';
 print '<td>'.$langs->trans("BANKIMPORT_Setup_CSV_Separator").'</td>';
 print '<td>Semikolon (;)</td>';
+print '</tr>';
+
+print '<tr class="oddeven">';
+print '<td>'.$form->textwithpicto($langs->trans("BANKIMPORT_Setup_SplitFees"), $langs->trans("BANKIMPORT_Setup_SplitFees_Help")).'</td>';
+print '<td>'.$form->selectyesno('BANKIMPORT_SPLIT_FEES', getDolGlobalInt('BANKIMPORT_SPLIT_FEES', 0), 1).'</td>';
 print '</tr>';
 
 // Features

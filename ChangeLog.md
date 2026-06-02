@@ -1,6 +1,15 @@
 # Changelog for bankimport module
 
 
+## 0.0.14
+
+- Add optional splitting of embedded fees on XML (CAMT.053) import: an entry whose `<Chrgs>` records a charge in the account's own currency is posted as two bank lines — the principal and the fee — that sum to the original amount, so bank fees (e.g. Revolut FX charges) appear and can be booked on their own line. Implemented as a pure `BankImport\FeeSplitter` helper with 7 unit tests.
+- Never split a cross-currency fee: when an FX transfer between the user's own accounts charges the fee in the target currency, the source-currency leg advertises that fee in a different currency than its own amount. Splitting it there would double-count the fee (the other leg already carries it) and invent a charge that never hit this account, so such entries stay a single line. Verification cannot catch this (the two sub-lines still net to the original amount), so the guard lives in `FeeSplitter` and is covered by tests.
+- Keep verification green after a split: both lines carry the same `num_chq` (`AcctSvcrRef`), so `StatementSummary::aggregate()` folds them back into one logical entry equal to the bank's reported amount; the lines are told apart by distinct import keys (the fee line's reference is salted with `:fee`) so duplicate detection keeps working and re-imports stay idempotent even if the setting is toggled.
+- Add a `BANKIMPORT_SPLIT_FEES` setting (disabled by default — opt-in) with an on/off toggle on the module setup page; enabling it turns on the fee splitting described above. Existing imports are untouched, and splitting only applies to entries that carry an `AcctSvcrRef` (required so the two lines share a stable reference for verification and duplicate detection).
+- Add `FeeLineLabel` and the new setup strings to the English and German language files.
+
+
 ## 0.0.13
 
 - Add post-import statement verification for XML (CAMT.053): the bank's own `<Bal>` / `<TxsSummry>` blocks are compared against what actually landed in `llx_bank`, and the import screen shows a per-check result table (count, credit/debit sums, net, per-entry, unaddressable). Catches dropped entries, wrong signs and false-skips that unit tests cannot. Implemented as a pure `BankImport\StatementSummary` helper (parse / aggregate / verify) with 30 unit tests.
