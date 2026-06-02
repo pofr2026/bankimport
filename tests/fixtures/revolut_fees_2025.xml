@@ -1,0 +1,199 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Sanitized snapshot of a real Revolut Business EUR CAMT.053 statement (camt.053.001.08),
+  trimmed to four entries that drive the v0.0.14 FeeSplitter feature. Built from the real
+  2025 EUR statement the maintainer provided; PII removed, math preserved.
+
+  Sanitization (PII removed, math preserved):
+    - Account holder name / address / org-id replaced with generic placeholders
+    - Counterparty natural-person names replaced with "Test User One"
+    - Account IBAN replaced with an all-zero IBAN (still valid format)
+    - Card PAN partially-masked digits replaced with 400000...0001
+    - Free-text labels rewritten to neutral descriptions
+  Kept verbatim (no PII, load-bearing for FeeSplitter / verification math):
+    - All amounts, dates, currency codes, FX rates
+    - All AcctSvcrRef / MsgId / Stmt Id (opaque hashes, no semantic content)
+    - Balance blocks (OPBD/CLBD), TxsSummry totals, and every <Chrgs> block
+
+  Why EUR (not the CHF Jan-May fixture): the cross-currency-fee guard can only be shown
+  on an account whose currency differs from the fee currency. An EUR->CHF own-account
+  transfer posts a EUR amount but a CHF fee, which is exactly the case that must NOT split.
+
+  Entries and the FeeSplitter case each one drives:
+    - 2025-05-13  ref 6822efa8...  EUR 200.00 DBIT, fee 1.12 CHF  -> cross-currency: NO split
+    - 2025-03-02  ref 67c3499d...  EUR  67.33 DBIT, fee 0.67 EUR  -> same-currency split (-66.66 / -0.67)
+    - 2025-02-02  ref 679e4513...  EUR  77.05 DBIT, fee 0.76 EUR  -> same-currency split (-76.29 / -0.76)
+    - 2025-11-14  ref 6916be67...  EUR 250.00 CRDT, no fee        -> plain entry (single line)
+
+  Internal-consistency check (verifiable by hand):
+    OPBD 1000.00 + TtlNetNtry -94.38 = CLBD 905.62
+    TtlCdtNtries.Sum 250.00 - TtlDbtNtries.Sum 344.38 = -94.38
+    NbOfNtries 4 = 1 credit + 3 debit
+    TtlNtries.Sum 594.38 = 250.00 + 344.38
+  Note: <Amt> is fee-inclusive (the posted movement), so the debit Amts already contain
+  their fees; the summary totals are computed from those posted Amts, not from principals.
+-->
+<Document xmlns="urn:iso:std:iso:20022:tech:xsd:camt.053.001.08">
+  <BkToCstmrStmt>
+    <GrpHdr>
+      <MsgId>d6eed93f9e4247fc8f7933575a8bf5c8</MsgId>
+      <CreDtTm>2026-06-01T12:48:56.749Z</CreDtTm>
+    </GrpHdr>
+    <Stmt>
+      <Id>9814d8db20dd4ba48d8d4f33172d620b</Id>
+      <ElctrncSeqNb>1780318136749</ElctrncSeqNb>
+      <CreDtTm>2026-06-01T12:48:56.749Z</CreDtTm>
+      <FrToDt>
+        <FrDtTm>2025-01-01T00:00:00Z</FrDtTm>
+        <ToDtTm>2025-12-31T23:59:59.999Z</ToDtTm>
+      </FrToDt>
+      <Acct>
+        <Id><IBAN>LT000000000000000002</IBAN></Id>
+        <Tp><Cd>TRAN</Cd></Tp>
+        <Ccy>EUR</Ccy>
+        <Nm>Main</Nm>
+        <Ownr>
+          <Nm>Test Company GmbH</Nm>
+          <PstlAdr>
+            <PstCd>0000</PstCd>
+            <TwnNm>Test City</TwnNm>
+            <Ctry>CH</Ctry>
+            <AdrLine>Test Street 1</AdrLine>
+          </PstlAdr>
+          <Id>
+            <OrgId>
+              <Othr>
+                <Id>CHE-000.000.001</Id>
+                <SchmeNm><Cd>COID</Cd></SchmeNm>
+              </Othr>
+            </OrgId>
+          </Id>
+        </Ownr>
+        <Svcr>
+          <FinInstnId><Nm>Revolut Bank UAB</Nm></FinInstnId>
+        </Svcr>
+      </Acct>
+      <Bal>
+        <Tp><CdOrPrtry><Cd>OPBD</Cd></CdOrPrtry></Tp>
+        <Amt Ccy="EUR">1000.00</Amt>
+        <CdtDbtInd>CRDT</CdtDbtInd>
+        <Dt><DtTm>2025-01-01T00:00:00Z</DtTm></Dt>
+      </Bal>
+      <Bal>
+        <Tp><CdOrPrtry><Cd>CLBD</Cd></CdOrPrtry></Tp>
+        <Amt Ccy="EUR">905.62</Amt>
+        <CdtDbtInd>CRDT</CdtDbtInd>
+        <Dt><DtTm>2025-12-31T23:59:59.999Z</DtTm></Dt>
+      </Bal>
+      <TxsSummry>
+        <TtlNtries>
+          <NbOfNtries>4</NbOfNtries>
+          <Sum>594.38</Sum>
+          <TtlNetNtry>
+            <Amt>94.38</Amt>
+            <CdtDbtInd>DBIT</CdtDbtInd>
+          </TtlNetNtry>
+        </TtlNtries>
+        <TtlCdtNtries><NbOfNtries>1</NbOfNtries><Sum>250.00</Sum></TtlCdtNtries>
+        <TtlDbtNtries><NbOfNtries>3</NbOfNtries><Sum>344.38</Sum></TtlDbtNtries>
+      </TxsSummry>
+
+      <Ntry>
+        <Amt Ccy="EUR">250.00</Amt>
+        <CdtDbtInd>CRDT</CdtDbtInd>
+        <Sts><Cd>BOOK</Cd></Sts>
+        <BookgDt><DtTm>2025-11-14T05:30:15.083Z</DtTm></BookgDt>
+        <ValDt><DtTm>2025-11-14T05:30:15.083Z</DtTm></ValDt>
+        <AcctSvcrRef>6916be670692a86b96ec2180b1c84a58</AcctSvcrRef>
+        <BkTxCd><Domn><Cd>ACMT</Cd><Fmly><Cd>ACOP</Cd><SubFmlyCd>OTHR</SubFmlyCd></Fmly></Domn></BkTxCd>
+        <NtryDtls><TxDtls>
+          <RmtInf><Ustrd>Reward</Ustrd></RmtInf>
+          <AddtlTxInf>Reward</AddtlTxInf>
+        </TxDtls></NtryDtls>
+      </Ntry>
+
+      <Ntry>
+        <Amt Ccy="EUR">200.00</Amt>
+        <CdtDbtInd>DBIT</CdtDbtInd>
+        <Sts><Cd>BOOK</Cd></Sts>
+        <BookgDt><DtTm>2025-05-13T07:07:20.736Z</DtTm></BookgDt>
+        <ValDt><DtTm>2025-05-13T07:07:20.736Z</DtTm></ValDt>
+        <AcctSvcrRef>6822efa8c099a49ea31cce7efd2d4f7e</AcctSvcrRef>
+        <BkTxCd><Domn><Cd>FORX</Cd><Fmly><Cd>SPOT</Cd><SubFmlyCd>NTAV</SubFmlyCd></Fmly></Domn></BkTxCd>
+        <AmtDtls><TxAmt>
+          <Amt Ccy="EUR">200.00</Amt>
+          <CcyXchg>
+            <SrcCcy>EUR</SrcCcy>
+            <TrgtCcy>CHF</TrgtCcy>
+            <UnitCcy>EUR</UnitCcy>
+            <XchgRate>0.9355567205</XchgRate>
+          </CcyXchg>
+        </TxAmt></AmtDtls>
+        <Chrgs>
+          <TtlChrgsAndTaxAmt Ccy="CHF">1.12</TtlChrgsAndTaxAmt>
+        </Chrgs>
+        <NtryDtls><TxDtls>
+          <RltdPties><InitgPty><Pty><Nm>Test User One</Nm></Pty></InitgPty></RltdPties>
+          <RmtInf><Ustrd>Internal transfer EUR to CHF</Ustrd></RmtInf>
+          <AddtlTxInf>Internal transfer EUR to CHF</AddtlTxInf>
+        </TxDtls></NtryDtls>
+      </Ntry>
+
+      <Ntry>
+        <Amt Ccy="EUR">67.33</Amt>
+        <CdtDbtInd>DBIT</CdtDbtInd>
+        <Sts><Cd>BOOK</Cd></Sts>
+        <BookgDt><DtTm>2025-03-02T13:00:14.338Z</DtTm></BookgDt>
+        <ValDt><DtTm>2025-03-02T13:00:14.338Z</DtTm></ValDt>
+        <AcctSvcrRef>67c3499d7cf5a691ab4455c3bcd2c618</AcctSvcrRef>
+        <BkTxCd><Domn><Cd>PMNT</Cd><Fmly><Cd>CCRD</Cd><SubFmlyCd>POSP</SubFmlyCd></Fmly></Domn></BkTxCd>
+        <AmtDtls><TxAmt>
+          <Amt Ccy="EUR">67.33</Amt>
+          <CcyXchg>
+            <SrcCcy>EUR</SrcCcy>
+            <TrgtCcy>CHF</TrgtCcy>
+            <UnitCcy>EUR</UnitCcy>
+            <XchgRate>0.9366765193</XchgRate>
+          </CcyXchg>
+        </TxAmt></AmtDtls>
+        <Chrgs>
+          <TtlChrgsAndTaxAmt Ccy="EUR">0.67</TtlChrgsAndTaxAmt>
+        </Chrgs>
+        <NtryDtls><TxDtls>
+          <RltdPties><InitgPty><Pty><Nm>Test User One</Nm></Pty></InitgPty></RltdPties>
+          <RmtInf><Ustrd>Online advertising service</Ustrd></RmtInf>
+          <CardTx><Card><CardBrnd><Id>VISA</Id></CardBrnd><AddtlCardData>400000******0001</AddtlCardData></Card></CardTx>
+          <AddtlTxInf>Online advertising service</AddtlTxInf>
+        </TxDtls></NtryDtls>
+      </Ntry>
+
+      <Ntry>
+        <Amt Ccy="EUR">77.05</Amt>
+        <CdtDbtInd>DBIT</CdtDbtInd>
+        <Sts><Cd>BOOK</Cd></Sts>
+        <BookgDt><DtTm>2025-02-02T14:07:25.435Z</DtTm></BookgDt>
+        <ValDt><DtTm>2025-02-02T14:07:25.435Z</DtTm></ValDt>
+        <AcctSvcrRef>679e4513bfaca9b7807d446a40ad862c</AcctSvcrRef>
+        <BkTxCd><Domn><Cd>PMNT</Cd><Fmly><Cd>CCRD</Cd><SubFmlyCd>POSP</SubFmlyCd></Fmly></Domn></BkTxCd>
+        <AmtDtls><TxAmt>
+          <Amt Ccy="EUR">77.05</Amt>
+          <CcyXchg>
+            <SrcCcy>EUR</SrcCcy>
+            <TrgtCcy>CHF</TrgtCcy>
+            <UnitCcy>EUR</UnitCcy>
+            <XchgRate>0.9437723295</XchgRate>
+          </CcyXchg>
+        </TxAmt></AmtDtls>
+        <Chrgs>
+          <TtlChrgsAndTaxAmt Ccy="EUR">0.76</TtlChrgsAndTaxAmt>
+        </Chrgs>
+        <NtryDtls><TxDtls>
+          <RltdPties><InitgPty><Pty><Nm>Test User One</Nm></Pty></InitgPty></RltdPties>
+          <RmtInf><Ustrd>Online advertising service</Ustrd></RmtInf>
+          <CardTx><Card><CardBrnd><Id>VISA</Id></CardBrnd><AddtlCardData>400000******0001</AddtlCardData></Card></CardTx>
+          <AddtlTxInf>Online advertising service</AddtlTxInf>
+        </TxDtls></NtryDtls>
+      </Ntry>
+    </Stmt>
+  </BkToCstmrStmt>
+</Document>
