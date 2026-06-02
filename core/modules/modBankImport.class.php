@@ -15,7 +15,7 @@ class modBankImport extends DolibarrModules
         global $langs, $conf;
         $this->db = $db;
 
-        $this->version = BankImportHelper::getEnv('VERSION', '0.0.14');
+        $this->version = BankImportHelper::getEnv('VERSION', '0.0.15');
 
         // Unique ID (custom modules > 100000)
         $this->numero = 104001;
@@ -36,8 +36,10 @@ class modBankImport extends DolibarrModules
         // Default module options
         $this->module_parts = array();
         $this->dirs = array();
-        //$this->config_page_url = array('setup.php@bankimport');
-        $this->config_page_url = array();
+        // Link the module's setup page so Dolibarr shows the configure (gear) icon
+        // on the Modules list. Without this the page (admin/setup.php) — which holds
+        // the "Split fees" toggle — is unreachable from the UI.
+        $this->config_page_url = array('setup.php@bankimport');
         $this->depends = array();
         $this->requiredby = array();
         $this->phpmin = array(7, 4);

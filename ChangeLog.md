@@ -1,6 +1,11 @@
 # Changelog for bankimport module
 
 
+## 0.0.15
+
+- Fix the module configuration page being unreachable: `config_page_url` was empty, so Dolibarr showed no configure (gear) icon for the module on the Modules list and `admin/setup.php` could not be opened. This left the `BANKIMPORT_SPLIT_FEES` toggle added in 0.0.14 inaccessible from the UI (it could only be changed directly in the database). The setup page is now linked again so the toggle is reachable.
+
+
 ## 0.0.14
 
 - Add optional splitting of embedded fees on XML (CAMT.053) import: an entry whose `<Chrgs>` records a charge in the account's own currency is posted as two bank lines — the principal and the fee — that sum to the original amount, so bank fees (e.g. Revolut FX charges) appear and can be booked on their own line. Implemented as a pure `BankImport\FeeSplitter` helper with 7 unit tests.
