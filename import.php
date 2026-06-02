@@ -52,6 +52,7 @@ if (!$res) {
 }
 
 require_once DOL_DOCUMENT_ROOT.'/core/lib/admin.lib.php';
+require_once DOL_DOCUMENT_ROOT.'/core/lib/files.lib.php';
 
 require_once __DIR__ . '/core/class/BankImport.class.php';
 
@@ -62,120 +63,167 @@ if (!$user->rights->bankimport->import) {
 
 $langs->load("bankimport@bankimport");
 
+// Get parameters
+$action    = GETPOST('action', 'alpha');
+$accountid = GETPOST('accountid', 'int');
+$encoding  = GETPOST('encoding', 'alpha'); // UTF-8 or ISO-8859-1
+$splitfees = GETPOST('splitfees', 'int');  // 0/1 from the per-import checkbox
+$tokenFile = GETPOST('tokenfile', 'alpha'); // our temp-file handle (NOT the CSRF token)
+
+// Token validation is handled by Dolibarr automatically (newToken()/checkToken).
+
+$bankImport = new BankImport($db);
+
+// Temp area for the two-step flow: the uploaded file is parked here between "preview" and
+// "commit" so nothing is parsed-and-written in one shot. It lives under DOL_DATA_ROOT (not
+// web-accessible) and is removed on commit/cancel.
+$tempdir = DOL_DATA_ROOT.'/bankimport/temp';
+
+$result  = array(); // processFile() outcome (commit)
+$preview = null;     // buildPreview() outcome (preview)
+
 llxHeader('', $langs->trans("BANKIMPORT_Title"));
 
 print load_fiche_titre($langs->trans("BANKIMPORT_Title"));
 
-// Get parameters
-$accountid = GETPOST('accountid', 'int');
-$encoding = GETPOST('encoding', 'alpha'); // UTF-8 oder ISO-8859-1
-$action = GETPOST('action', 'alpha');
 
-// Token validation is handled by Dolibarr automatically
+/*
+ * Actions
+ */
 
-// Initialize BankImport object
-$bankImport = new BankImport($db);
-
-// processFile()'s outcome. Declared here so the verification table block far
-// below (rendered outside the action branch) reads a defined value on a plain
-// GET. empty() already tolerates an unset variable, so this is for clarity and
-// static analysis, not to silence a runtime warning.
-$result = array();
-
-// Handle form submission
-if ($action == 'upload') {
-    // Validate required fields first
-    $errors = array();
-
-    // Check if bank account is selected
-    if (empty($accountid) || $accountid == 0 || $accountid == '0') {
-        $errors[] = $langs->trans("BANKIMPORT_Choose_account");
-    } else {
-        // Verify that the bank account exists
-        $sql = "SELECT rowid FROM " . MAIN_DB_PREFIX . "bank_account WHERE rowid = " . ((int) $accountid);
-        $resql = $db->query($sql);
-        if (!$resql || $db->num_rows($resql) == 0) {
-            $errors[] = $langs->trans("BANKIMPORT_Invalid_account");
+// Cancel: drop the parked file and fall back to the upload form.
+if ($action == 'cancel') {
+    if ($tokenFile !== '') {
+        $f = $tempdir.'/'.basename($tokenFile);
+        if (is_file($f)) {
+            dol_delete_file($f);
         }
     }
+    setEventMessages($langs->trans("BANKIMPORT_Cancelled"), null, 'mesgs');
+    $action = '';
+}
 
-    // Check if file is uploaded
+// Step 1 — preview: validate, park the upload, build a dry-run plan (no DB writes).
+if ($action == 'upload') {
+    $errors = array();
+
+    if (empty($accountid) || $accountid == 0) {
+        $errors[] = $langs->trans("BANKIMPORT_Choose_account");
+    } elseif (!$bankImport->accountExists($accountid)) {
+        $errors[] = $langs->trans("BANKIMPORT_Invalid_account");
+    }
+
     if (empty($_FILES['statement']['tmp_name'])) {
         $errors[] = $langs->trans("BANKIMPORT_Choose_file");
     }
 
-    // Display errors if any
     if (!empty($errors)) {
         foreach ($errors as $error) {
             setEventMessages($error, null, 'errors');
         }
     } else {
-        // All validations passed, proceed with import
         $bankImport->setAccountId($accountid);
         $bankImport->setEncoding($encoding);
 
-        // Validate file
         if (!$bankImport->validateFile($_FILES['statement'])) {
             setEventMessages($bankImport->error, null, 'errors');
         } else {
-            // Process file
-            $result = $bankImport->processFile($_FILES['statement']['tmp_name']);
+            dol_mkdir($tempdir);
 
-            // Display results
-            if ($result['success'] > 0) {
-                setEventMessages($langs->trans("BANKIMPORT_Success_imported", $result['success']), null, 'mesgs');
-            }
-
-            if ($result['skipped'] > 0) {
-                setEventMessages($langs->trans("BANKIMPORT_Skipped_imported", $result['skipped']), null, 'warnings');
-            }
-
-            if (!empty($result['errors'])) {
-                foreach ($result['errors'] as $error) {
-                    setEventMessages($error, null, 'errors');
+            // GC orphaned previews: a user who closes the tab after preview never reaches
+            // commit/cancel, so the parked statement (sensitive data) would linger forever. Drop
+            // anything older than an hour whenever a new upload starts — cheap and bounded.
+            $cutoff = dol_now() - 3600;
+            foreach (glob($tempdir.'/*') ?: array() as $stale) {
+                if (is_file($stale) && filemtime($stale) < $cutoff) {
+                    dol_delete_file($stale);
                 }
             }
 
-            // Statement verification summary (XML/CAMT.053 only — CSV has no
-            // summary blocks). $result['verification'] is the flat list of
-            // check-result records produced by StatementSummary::verify().
-            if (!empty($result['verification'])) {
-                $mismatchCount = 0;
-                $skippedCount = 0;
-                $errorCount = 0;
-                foreach ($result['verification'] as $check) {
-                    if ($check['status'] === 'mismatch') {
-                        $mismatchCount++;
-                    } elseif ($check['status'] === 'skipped') {
-                        $skippedCount++;
-                    } elseif ($check['status'] === 'error') {
-                        $errorCount++;
+            $tokenFile = bin2hex(random_bytes(16));
+            $dest = $tempdir.'/'.$tokenFile;
+            $moved = dol_move_uploaded_file($_FILES['statement']['tmp_name'], $dest, 1, 0, $_FILES['statement']['error']);
+            if (!is_numeric($moved) || $moved <= 0) {
+                setEventMessages($langs->trans("BANKIMPORT_Upload_failed"), null, 'errors');
+            } else {
+                $bankImport->setSplitFees((bool) $splitfees);
+                $preview = $bankImport->buildPreview($dest);
+                if (!empty($preview['errors'])) {
+                    foreach ($preview['errors'] as $error) {
+                        setEventMessages($error, null, 'errors');
                     }
-                }
-                // 'error' (DB / unscopable statement) is the most actionable
-                // root cause, so it is always surfaced, independently of any
-                // mismatch tally. It also suppresses the optimistic
-                // "all passed" / "passed with skips" lines below.
-                if ($errorCount > 0) {
-                    setEventMessages($langs->trans("BANKIMPORT_Verification_Error", $errorCount), null, 'errors');
-                }
-                if ($mismatchCount > 0) {
-                    setEventMessages($langs->trans("BANKIMPORT_Verification_Failed", $mismatchCount), null, 'errors');
-                } elseif ($skippedCount > 0 && $errorCount === 0) {
-                    // All comparable checks passed, but some could not be run (e.g. the
-                    // bank omitted parts of the <TxsSummry> oracle) — surface honestly.
-                    setEventMessages($langs->trans("BANKIMPORT_Verification_PassedWithSkips", $skippedCount), null, 'warnings');
-                } elseif ($errorCount === 0 && $skippedCount === 0) {
-                    setEventMessages($langs->trans("BANKIMPORT_Verification_AllPassed"), null, 'mesgs');
                 }
             }
         }
     }
 }
 
-// Detailed verification table (rendered outside the action block so it shows
-// directly under the page title after an import). Each row is one check with
-// its status; mismatches and "not verifiable" (skipped) are highlighted.
+// Step 2 — commit: re-parse the parked file and actually write, then remove it.
+if ($action == 'commit') {
+    $dest = ($tokenFile !== '') ? $tempdir.'/'.basename($tokenFile) : '';
+
+    if ($dest === '' || !is_file($dest)) {
+        setEventMessages($langs->trans("BANKIMPORT_Preview_Expired"), null, 'errors');
+    } elseif (!$bankImport->accountExists($accountid)) {
+        // Parity with the upload branch: the account id rode in a hidden field, so re-confirm it
+        // exists before writing (authorized users only reach their own accounts — a friendly-error
+        // guard, not a security boundary).
+        setEventMessages($langs->trans("BANKIMPORT_Invalid_account"), null, 'errors');
+        dol_delete_file($dest);
+    } else {
+        $bankImport->setAccountId($accountid);
+        $bankImport->setEncoding($encoding);
+        $bankImport->setSplitFees((bool) $splitfees);
+
+        $result = $bankImport->processFile($dest);
+        dol_delete_file($dest);
+
+        if (!empty($result['success'])) {
+            setEventMessages($langs->trans("BANKIMPORT_Success_imported", $result['success']), null, 'mesgs');
+        }
+        if (!empty($result['skipped'])) {
+            setEventMessages($langs->trans("BANKIMPORT_Skipped_imported", $result['skipped']), null, 'warnings');
+        }
+        if (!empty($result['errors'])) {
+            foreach ($result['errors'] as $error) {
+                setEventMessages($error, null, 'errors');
+            }
+        }
+
+        // Statement verification summary (XML/CAMT.053 only).
+        if (!empty($result['verification'])) {
+            $mismatchCount = 0;
+            $skippedCount = 0;
+            $errorCount = 0;
+            foreach ($result['verification'] as $check) {
+                if ($check['status'] === 'mismatch') {
+                    $mismatchCount++;
+                } elseif ($check['status'] === 'skipped') {
+                    $skippedCount++;
+                } elseif ($check['status'] === 'error') {
+                    $errorCount++;
+                }
+            }
+            if ($errorCount > 0) {
+                setEventMessages($langs->trans("BANKIMPORT_Verification_Error", $errorCount), null, 'errors');
+            }
+            if ($mismatchCount > 0) {
+                setEventMessages($langs->trans("BANKIMPORT_Verification_Failed", $mismatchCount), null, 'errors');
+            } elseif ($skippedCount > 0 && $errorCount === 0) {
+                setEventMessages($langs->trans("BANKIMPORT_Verification_PassedWithSkips", $skippedCount), null, 'warnings');
+            } elseif ($errorCount === 0 && $skippedCount === 0) {
+                setEventMessages($langs->trans("BANKIMPORT_Verification_AllPassed"), null, 'mesgs');
+            }
+        }
+    }
+}
+
+
+/*
+ * View
+ */
+
+// Detailed verification table (after a commit).
 if (!empty($result['verification'])) {
     $statusLabels = array(
         'ok'       => $langs->trans("BANKIMPORT_Verification_Status_ok"),
@@ -210,94 +258,183 @@ if (!empty($result['verification'])) {
     print '<br>';
 }
 
-// Display form
-print '<form action="'.$_SERVER["PHP_SELF"].'" method="post" enctype="multipart/form-data">';
-print '<input type="hidden" name="token" value="'.newToken().'">';
-print '<input type="hidden" name="action" value="upload">';
+// Preview table + confirm/cancel (after a successful "preview" parse).
+if ($preview !== null && empty($preview['errors'])) {
+    if (empty($preview['rows'])) {
+        // Parked file is unusable for a commit; drop it and show the form again.
+        if ($tokenFile !== '') {
+            $f = $tempdir.'/'.basename($tokenFile);
+            if (is_file($f)) {
+                dol_delete_file($f);
+            }
+        }
+        setEventMessages($langs->trans("BANKIMPORT_Preview_NothingToImport"), null, 'warnings');
+    } else {
+        print load_fiche_titre($langs->trans("BANKIMPORT_Preview_Title"), '', '');
+        $summary = $langs->trans("BANKIMPORT_Preview_Summary", $preview['new'], $preview['duplicate']);
+        if ($preview['split'] > 0) {
+            $summary .= ' '.$langs->trans("BANKIMPORT_Preview_SplitInfo", $preview['split']);
+        }
+        print '<div class="info">'.$summary.'</div><br>';
 
-print '<table class="noborder centpercent">';
-print '<tr class="liste_titre">';
-print '<td colspan="2">'.$langs->trans("BANKIMPORT_Import_Form").'</td>';
-print '</tr>';
+        print '<table class="noborder centpercent">';
+        print '<tr class="liste_titre">';
+        print '<td>'.$langs->trans("BANKIMPORT_Preview_Col_Date").'</td>';
+        print '<td>'.$langs->trans("BANKIMPORT_Preview_Col_Counterparty").'</td>';
+        print '<td>'.$langs->trans("BANKIMPORT_Preview_Col_Label").'</td>';
+        print '<td class="right">'.$langs->trans("BANKIMPORT_Preview_Col_Amount").'</td>';
+        print '<td>'.$langs->trans("BANKIMPORT_Preview_Col_Type").'</td>';
+        print '<td>'.$langs->trans("BANKIMPORT_Preview_Col_Status").'</td>';
+        print '</tr>';
 
-// Bank account selection
-print '<tr class="oddeven">';
-print '<td class="fieldrequired">'.$langs->trans("BANKIMPORT_Bank_account").'</td>';
-print '<td>';
-$form = new Form($db);
-print $form->select_comptes($accountid, 'accountid', 0, '', 1, 0, 'all');
-print '<span class="fieldrequired" style="color: red;">*</span>';
-print '</td>';
-print '</tr>';
+        foreach ($preview['rows'] as $r) {
+            $isDup = ($r['status'] === 'duplicate');
 
-// File upload
-print '<tr class="oddeven">';
-print '<td class="fieldrequired">'.$langs->trans("BANKIMPORT_File_label").'</td>';
-print '<td>';
-print '<input type="file" name="statement" accept=".csv,.xml,text/csv,text/plain,text/xml,application/xml" required>';
-print '</td>';
-print '</tr>';
+            // Grey out duplicates (whole row). Split entries (principal + fee) get a teal accent
+            // bar on the first cell so the pair reads as one group without fighting the row
+            // striping — a quieter cue than a full-row background tint.
+            $rowStyle = $isDup ? 'color:#999;' : '';
+            $firstCellStyle = $r['is_split'] ? 'border-left:4px solid #1f9d7a;padding-left:6px;' : '';
 
-// Encoding selection
-print '<tr class="oddeven">';
-print '<td>'.$langs->trans("BANKIMPORT_Encoding").'</td>';
-print '<td>';
-print '<select name="encoding">';
-$encodings = array('ISO-8859-1' => 'ISO-8859-1', 'UTF-8' => 'UTF-8');
-foreach ($encodings as $key => $label) {
-    $selected = ($encoding == $key) ? 'selected' : '';
-    print '<option value="'.$key.'" '.$selected.'>'.$label.'</option>';
+            if ($r['is_fee']) {
+                $typeText = $langs->trans("BANKIMPORT_Preview_Type_Fee");
+            } elseif ($r['is_split']) {
+                $typeText = $langs->trans("BANKIMPORT_Preview_Type_Principal");
+            } else {
+                $typeText = $langs->trans("BANKIMPORT_Preview_Type_Normal");
+            }
+
+            $statusText = $isDup ? $langs->trans("BANKIMPORT_Preview_Status_Duplicate") : $langs->trans("BANKIMPORT_Preview_Status_New");
+            $statusColor = $isDup ? '#999' : 'green';
+
+            // Fee lines are indented so the principal/fee pairing reads at a glance.
+            $labelHtml = ($r['is_fee'] ? '&nbsp;&nbsp;↳ ' : '').dol_escape_htmltag($r['label']);
+
+            print '<tr class="oddeven" style="'.$rowStyle.'">';
+            print '<td style="'.$firstCellStyle.'">'.dol_print_date($r['dateo'], 'day').'</td>';
+            print '<td>'.dol_escape_htmltag($r['owner']).'</td>';
+            print '<td>'.$labelHtml.'</td>';
+            print '<td class="right">'.price($r['amount']).'</td>';
+            print '<td>'.dol_escape_htmltag($typeText).'</td>';
+            print '<td style="color:'.$statusColor.';">'.dol_escape_htmltag($statusText).'</td>';
+            print '</tr>';
+        }
+        print '</table>';
+        print '<br>';
+
+        // Confirm: re-uses the parked file (tokenfile) — re-parsed and written server-side.
+        print '<div class="center">';
+        print '<form action="'.$_SERVER["PHP_SELF"].'" method="post" style="display:inline-block; margin-right:10px;">';
+        print '<input type="hidden" name="token" value="'.newToken().'">';
+        print '<input type="hidden" name="action" value="commit">';
+        print '<input type="hidden" name="tokenfile" value="'.dol_escape_htmltag($tokenFile).'">';
+        print '<input type="hidden" name="accountid" value="'.((int) $accountid).'">';
+        print '<input type="hidden" name="encoding" value="'.dol_escape_htmltag($encoding).'">';
+        print '<input type="hidden" name="splitfees" value="'.((int) $splitfees).'">';
+        print '<input type="submit" class="button" value="'.$langs->trans("BANKIMPORT_Confirm_Import").'">';
+        print '</form>';
+
+        print '<form action="'.$_SERVER["PHP_SELF"].'" method="post" style="display:inline-block;">';
+        print '<input type="hidden" name="token" value="'.newToken().'">';
+        print '<input type="hidden" name="action" value="cancel">';
+        print '<input type="hidden" name="tokenfile" value="'.dol_escape_htmltag($tokenFile).'">';
+        print '<input type="submit" class="button button-cancel" value="'.$langs->trans("BANKIMPORT_Cancel").'">';
+        print '</form>';
+        print '</div>';
+    }
 }
-print '</select>';
-print '</td>';
-print '</tr>';
 
-// Submit button
-print '<tr class="oddeven">';
-print '<td colspan="2" class="center">';
-print '<input type="submit" class="button" id="submitButton" value="'.$langs->trans("BANKIMPORT_Importieren_label").'" disabled>';
-print '</td>';
-print '</tr>';
+// Upload form — shown unless a preview is currently on screen waiting for confirmation.
+$showUploadForm = ($preview === null || !empty($preview['errors']) || empty($preview['rows']));
+if ($showUploadForm) {
+    print '<form action="'.$_SERVER["PHP_SELF"].'" method="post" enctype="multipart/form-data">';
+    print '<input type="hidden" name="token" value="'.newToken().'">';
+    print '<input type="hidden" name="action" value="upload">';
 
-print '</table>';
-print '</form>';
+    print '<table class="noborder centpercent">';
+    print '<tr class="liste_titre">';
+    print '<td colspan="2">'.$langs->trans("BANKIMPORT_Import_Form").'</td>';
+    print '</tr>';
 
-// JavaScript validation
-print '<script type="text/javascript">
+    // Bank account selection
+    print '<tr class="oddeven">';
+    print '<td class="fieldrequired">'.$langs->trans("BANKIMPORT_Bank_account").'</td>';
+    print '<td>';
+    $form = new Form($db);
+    print $form->select_comptes($accountid, 'accountid', 0, '', 1, 0, 'all');
+    print '<span class="fieldrequired" style="color: red;">*</span>';
+    print '</td>';
+    print '</tr>';
+
+    // File upload
+    print '<tr class="oddeven">';
+    print '<td class="fieldrequired">'.$langs->trans("BANKIMPORT_File_label").'</td>';
+    print '<td>';
+    print '<input type="file" name="statement" accept=".csv,.xml,text/csv,text/plain,text/xml,application/xml" required>';
+    print '</td>';
+    print '</tr>';
+
+    // Encoding selection
+    print '<tr class="oddeven">';
+    print '<td>'.$langs->trans("BANKIMPORT_Encoding").'</td>';
+    print '<td>';
+    print '<select name="encoding">';
+    $encodings = array('ISO-8859-1' => 'ISO-8859-1', 'UTF-8' => 'UTF-8');
+    foreach ($encodings as $key => $label) {
+        $selected = ($encoding == $key) ? 'selected' : '';
+        print '<option value="'.$key.'" '.$selected.'>'.$label.'</option>';
+    }
+    print '</select>';
+    print '</td>';
+    print '</tr>';
+
+    // Per-import fee-split toggle (defaults to the global BANKIMPORT_SPLIT_FEES setting).
+    $splitDefault = ($action == 'upload') ? $splitfees : getDolGlobalInt('BANKIMPORT_SPLIT_FEES', 0);
+    print '<tr class="oddeven">';
+    print '<td>'.$langs->trans("BANKIMPORT_SplitFees_ThisImport").'</td>';
+    print '<td><input type="checkbox" name="splitfees" value="1"'.($splitDefault ? ' checked' : '').'></td>';
+    print '</tr>';
+
+    // Submit
+    print '<tr class="oddeven">';
+    print '<td colspan="2" class="center">';
+    print '<input type="submit" class="button" id="submitButton" value="'.$langs->trans("BANKIMPORT_Importieren_label").'" disabled>';
+    print '</td>';
+    print '</tr>';
+
+    print '</table>';
+    print '</form>';
+
+    // JavaScript validation
+    print '<script type="text/javascript">
 document.addEventListener("DOMContentLoaded", function() {
     var form = document.querySelector("form");
     var accountSelect = document.querySelector("select[name=\'accountid\']");
     var fileInput = document.querySelector("input[name=\'statement\']");
     var submitButton = document.getElementById("submitButton");
 
-    // Disable submit button initially if no account selected
     function updateSubmitButton() {
         var hasAccount = accountSelect.value && accountSelect.value != "0";
         var hasFile = fileInput.files && fileInput.files.length > 0;
         submitButton.disabled = !hasAccount || !hasFile;
     }
 
-    // Update submit button state when selections change
     accountSelect.addEventListener("change", updateSubmitButton);
     fileInput.addEventListener("change", updateSubmitButton);
-
-    // Initial state
     updateSubmitButton();
 
     form.addEventListener("submit", function(e) {
         var isValid = true;
         var errorMessages = [];
 
-        // Check if bank account is selected
         if (!accountSelect.value || accountSelect.value == "0") {
-            errorMessages.push("' . $langs->trans("BANKIMPORT_Choose_account") . '");
+            errorMessages.push("' . dol_escape_js($langs->trans("BANKIMPORT_Choose_account")) . '");
             accountSelect.focus();
             isValid = false;
         }
 
-        // Check if file is selected
         if (!fileInput.files || fileInput.files.length === 0) {
-            errorMessages.push("' . $langs->trans("BANKIMPORT_Choose_file") . '");
+            errorMessages.push("' . dol_escape_js($langs->trans("BANKIMPORT_Choose_file")) . '");
             if (isValid) fileInput.focus();
             isValid = false;
         }
@@ -310,14 +447,15 @@ document.addEventListener("DOMContentLoaded", function() {
 });
 </script>';
 
-// Display help information
-print '<br>';
-print '<div class="info">';
-print '<strong>'.$langs->trans("BANKIMPORT_Help_Title").'</strong><br>';
-print $langs->trans("BANKIMPORT_Help_Description").'<br><br>';
-print '<strong>'.$langs->trans("BANKIMPORT_Help_Format").'</strong><br>';
-print $langs->trans("BANKIMPORT_Help_Format_Details");
-print '</div>';
+    // Help
+    print '<br>';
+    print '<div class="info">';
+    print '<strong>'.$langs->trans("BANKIMPORT_Help_Title").'</strong><br>';
+    print $langs->trans("BANKIMPORT_Help_Description").'<br><br>';
+    print '<strong>'.$langs->trans("BANKIMPORT_Help_Format").'</strong><br>';
+    print $langs->trans("BANKIMPORT_Help_Format_Details");
+    print '</div>';
+}
 
 llxFooter();
 $db->close();

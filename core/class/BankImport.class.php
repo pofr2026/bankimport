@@ -23,10 +23,12 @@ require_once DOL_DOCUMENT_ROOT.'/compta/bank/class/account.class.php';
 require_once __DIR__ . '/ImportKey.php';
 require_once __DIR__ . '/StatementSummary.php';
 require_once __DIR__ . '/FeeSplitter.php';
+require_once __DIR__ . '/EntryPlan.php';
 
 use BankImport\ImportKey;
 use BankImport\StatementSummary;
 use BankImport\FeeSplitter;
+use BankImport\EntryPlan;
 
 /**
  * BankImport class
@@ -57,6 +59,13 @@ class BankImport extends CommonObject
      * @var string File encoding
      */
     public $encoding;
+
+    /**
+     * @var bool|null Per-import override for fee splitting. null means "not set" → fall back
+     *                to the BANKIMPORT_SPLIT_FEES global. The preview screen sets this so a
+     *                user can toggle splitting for one import without changing the global.
+     */
+    private $splitFees = null;
 
     /**
      * @var array CSV field mapping
@@ -111,6 +120,31 @@ class BankImport extends CommonObject
     }
 
     /**
+     * Override fee splitting for this import (preview checkbox). Pass null to revert to the
+     * BANKIMPORT_SPLIT_FEES global default.
+     *
+     * @param bool|null $on
+     * @return void
+     */
+    public function setSplitFees($on)
+    {
+        $this->splitFees = ($on === null) ? null : (bool) $on;
+    }
+
+    /**
+     * Resolve whether fee splitting is active: the per-import override if set, else the global.
+     *
+     * @return bool
+     */
+    private function splitFeesEnabled()
+    {
+        if ($this->splitFees !== null) {
+            return $this->splitFees;
+        }
+        return (bool) getDolGlobalInt('BANKIMPORT_SPLIT_FEES', 0);
+    }
+
+    /**
      * Validate uploaded file
      *
      * @param array $file $_FILES array element
@@ -140,6 +174,25 @@ class BankImport extends CommonObject
         }
 
         return true;
+    }
+
+    /**
+     * Whether a bank account with this id exists. Used to validate the chosen account on BOTH the
+     * preview-upload step and the commit step (the id rides in a hidden field between them), so the
+     * existence query lives here once instead of being inlined on both call sites. A lightweight
+     * indexed check — we only need yes/no, not a full Account::fetch().
+     *
+     * @param int $accountid
+     * @return bool
+     */
+    public function accountExists($accountid)
+    {
+        $id = (int) $accountid;
+        if ($id <= 0) {
+            return false;
+        }
+        $resql = $this->db->query("SELECT rowid FROM ".MAIN_DB_PREFIX."bank_account WHERE rowid = ".$id);
+        return ($resql && $this->db->num_rows($resql) > 0);
     }
 
     /**
@@ -235,6 +288,118 @@ class BankImport extends CommonObject
     }
 
     /**
+     * Dry-run: parse a statement file and return the line(s) that WOULD be written, each marked
+     * 'new' or 'duplicate' (per target account), WITHOUT touching the database. The preview UI
+     * renders this so a wrong account or wrong file is caught before anything is committed. It
+     * uses the same loaders and the same EntryPlan as the real import, so preview == commit.
+     *
+     * Fee splitting follows $this->splitFeesEnabled() — set it via setSplitFees() beforehand
+     * (the same single source the real import uses).
+     *
+     * @param string $filename
+     * @return array{rows: array, new: int, duplicate: int, split: int, errors: array}
+     */
+    public function buildPreview($filename)
+    {
+        $preview = array('rows' => array(), 'new' => 0, 'duplicate' => 0, 'split' => 0, 'errors' => array());
+
+        if (empty($this->accountid) || $this->accountid <= 0) {
+            $preview['errors'][] = 'No valid bank account selected';
+            return $preview;
+        }
+
+        // import_keys already planned in THIS file, so two identical rows in one statement (a CSV
+        // without a transaction id can collide on the composite key) are flagged the same way the
+        // commit would treat them: the first is new, the rest duplicates. Keeps preview == commit
+        // (writePlan would skip the later ones once the first is written).
+        $seen = array();
+
+        if ($this->detectFormat($filename) === 'xml') {
+            $error = '';
+            $xml = $this->loadXml($filename, $error);
+            if ($xml === null) {
+                $preview['errors'][] = $error;
+                return $preview;
+            }
+
+            $idx = 0;
+            foreach ($xml->BkToCstmrStmt->Stmt as $stmt) {
+                foreach ($stmt->Ntry as $ntry) {
+                    $idx++;
+                    $planned = $this->planXmlNtry($ntry);
+                    if (isset($planned['error'])) {
+                        $preview['errors'][] = "Entry $idx: " . $planned['error'];
+                        continue;
+                    }
+                    $this->appendPreviewRows($preview, $planned['plan'], $seen);
+                }
+            }
+            if ($idx === 0) {
+                $preview['errors'][] = 'No transactions (Ntry) found in XML';
+            }
+        } else {
+            $handle = fopen($filename, 'r');
+            if (!$handle) {
+                $preview['errors'][] = 'Could not open file';
+                return $preview;
+            }
+            $row = 0;
+            while (($data = fgetcsv($handle, 0, ";")) !== FALSE) {
+                $row++;
+                if ($row == 1) continue; // header
+                $data = $this->convertEncoding($data);
+                if (!$this->validateRow($data, $row)) {
+                    $preview['errors'][] = "Row $row: " . $this->error;
+                    continue;
+                }
+                $this->appendPreviewRows($preview, $this->planCsvRowData($data), $seen);
+            }
+            fclose($handle);
+        }
+
+        return $preview;
+    }
+
+    /**
+     * Append a plan's line(s) to the preview accumulator, tagging each with its duplicate status.
+     * The whole entry's status is decided by the principal line's key — the key writePlan dedups
+     * on — checked against BOTH the database (already imported) and the keys seen earlier in this
+     * same file (intra-file duplicate), so the preview's "duplicate" flag matches what a commit
+     * would skip.
+     *
+     * @param array $preview Accumulator (by reference).
+     * @param array $plan    A plan from EntryPlan.
+     * @param array $seen    Principal keys already planned in this file (by reference).
+     * @return void
+     */
+    private function appendPreviewRows(&$preview, $plan, &$seen)
+    {
+        $principalKey = $plan['lines'][0]['import_key'];
+        $duplicate = isset($seen[$principalKey]) || $this->isAlreadyImported($principalKey);
+        $seen[$principalKey] = true;
+
+        if ($plan['is_split']) {
+            $preview['split']++;
+        }
+        foreach ($plan['lines'] as $line) {
+            $preview['rows'][] = array(
+                'dateo'    => $plan['dateo'],
+                'owner'    => $plan['owner_other'],
+                'label'    => $line['label'],
+                'amount'   => $line['amount'],
+                'status'   => $duplicate ? 'duplicate' : 'new',
+                'is_fee'   => $line['is_fee'],
+                'is_split' => $plan['is_split'],
+            );
+            if ($duplicate) {
+                $preview['duplicate']++;
+            } else {
+                $preview['new']++;
+            }
+        }
+    }
+
+    /**
      * Process an XML file in CAMT.053 format (e.g. Revolut Business statement).
      *
      * @param string $filename File path
@@ -243,33 +408,11 @@ class BankImport extends CommonObject
      */
     private function processFileXml($filename, $result)
     {
-        $content = @file_get_contents($filename);
-        if ($content === false) {
-            $this->error = 'Could not read XML file';
-            $result['errors'][] = $this->error;
-            return $result;
-        }
-
-        // Strip the default namespace declaration so SimpleXML element access works without prefixes.
-        $content = preg_replace('/\sxmlns="[^"]+"/', '', $content, 1);
-
-        $prevUseErrors = libxml_use_internal_errors(true);
-        $xml = simplexml_load_string($content);
-        if ($xml === false) {
-            $errors = libxml_get_errors();
-            $msg = 'Invalid XML';
-            if (!empty($errors)) {
-                $msg .= ': ' . trim($errors[0]->message);
-            }
-            libxml_clear_errors();
-            libxml_use_internal_errors($prevUseErrors);
-            $result['errors'][] = $msg;
-            return $result;
-        }
-        libxml_use_internal_errors($prevUseErrors);
-
-        if (!isset($xml->BkToCstmrStmt)) {
-            $result['errors'][] = 'Not a CAMT bank statement (missing BkToCstmrStmt)';
+        $error = '';
+        $xml = $this->loadXml($filename, $error);
+        if ($xml === null) {
+            $this->error = $error;
+            $result['errors'][] = $error;
             return $result;
         }
 
@@ -301,6 +444,47 @@ class BankImport extends CommonObject
         $result['verification'] = $this->verifyImport($xml);
 
         return $result;
+    }
+
+    /**
+     * Load + validate a CAMT.053 file into a namespace-stripped SimpleXMLElement, or return null
+     * with $error set. Shared by the real import and the dry-run preview so both parse identically.
+     *
+     * @param string $filename
+     * @param string $error Out-param: human-readable failure reason when null is returned.
+     * @return \SimpleXMLElement|null
+     */
+    private function loadXml($filename, &$error)
+    {
+        $content = @file_get_contents($filename);
+        if ($content === false) {
+            $error = 'Could not read XML file';
+            return null;
+        }
+
+        // Strip the default namespace declaration so SimpleXML element access works without prefixes.
+        $content = preg_replace('/\sxmlns="[^"]+"/', '', $content, 1);
+
+        $prevUseErrors = libxml_use_internal_errors(true);
+        $xml = simplexml_load_string($content);
+        if ($xml === false) {
+            $errors = libxml_get_errors();
+            $error = 'Invalid XML';
+            if (!empty($errors)) {
+                $error .= ': ' . trim($errors[0]->message);
+            }
+            libxml_clear_errors();
+            libxml_use_internal_errors($prevUseErrors);
+            return null;
+        }
+        libxml_use_internal_errors($prevUseErrors);
+
+        if (!isset($xml->BkToCstmrStmt)) {
+            $error = 'Not a CAMT bank statement (missing BkToCstmrStmt)';
+            return null;
+        }
+
+        return $xml;
     }
 
     /**
@@ -409,14 +593,30 @@ class BankImport extends CommonObject
      */
     private function processXmlEntry($ntry, $idx, $numReleve = '')
     {
-        global $user;
-
-        $amount = (float) $ntry->Amt;
-        $cdtDbt = (string) $ntry->CdtDbtInd;
-        if ($cdtDbt === 'DBIT') {
-            $amount = -$amount;
+        $planned = $this->planXmlNtry($ntry);
+        if (isset($planned['error'])) {
+            return $planned['error'];
         }
+        return $this->writePlan($planned['plan'], $numReleve);
+    }
 
+    /**
+     * Date-parse one <Ntry> and turn it into a plan (no DB write). Returns ['plan' => array] on
+     * success or ['error' => string]. Shared by the real import and the dry-run preview, so the
+     * lines shown in the preview are exactly the lines the commit will write. Fee splitting is
+     * read from $this->splitFeesEnabled() (the per-import override or the global) so both callers
+     * use one single source of truth — set it via setSplitFees() before previewing/importing.
+     *
+     * @param \SimpleXMLElement $ntry
+     * @return array{plan?: array, error?: string}
+     */
+    private function planXmlNtry($ntry)
+    {
+        global $langs;
+
+        // Dates are parsed here, not in EntryPlan: dol_mktime() is Dolibarr-coupled and the
+        // import_key hashes the booking timestamp, so this must keep producing it exactly as
+        // before to stay dedup-compatible with already-stored rows.
         $bookDtTm = (string) $ntry->BookgDt->DtTm;
         if ($bookDtTm === '') $bookDtTm = (string) $ntry->BookgDt->Dt;
         $valDtTm = (string) $ntry->ValDt->DtTm;
@@ -424,123 +624,35 @@ class BankImport extends CommonObject
 
         $dateo = $this->parseIsoDate($bookDtTm);
         if (!$dateo) {
-            return 'Missing or invalid booking date';
+            return array('error' => 'Missing or invalid booking date');
         }
         $datev = $this->parseIsoDate($valDtTm);
         if (!$datev) $datev = $dateo;
 
-        $transactionId = trim((string) $ntry->AcctSvcrRef);
+        $plan = EntryPlan::planXmlEntry($ntry, $dateo, $datev, $this->splitFeesEnabled(), $langs->trans('BANKIMPORT_FeeLineLabel'));
+        return array('plan' => $plan);
+    }
 
-        $label = '';
-        $owner_other = '';
-        $iban_other = '';
-        $bank_other = '';
+    /**
+     * Write a planned entry (one line, or principal + fee) to llx_bank atomically, after a
+     * per-account duplicate check on the principal line's key. Shared by the XML and CSV
+     * import paths (and therefore by the post-preview commit, which re-parses and re-plans);
+     * the dry-run preview builds the same plan via EntryPlan but never calls this.
+     *
+     * @param array $plan A plan from EntryPlan::planXmlEntry()/planCsvRow().
+     * @param string|null $numReleve Statement id for num_releve scoping (XML); null for CSV.
+     * @return true|string True on success, 'skipped' if already imported, else an error message.
+     */
+    private function writePlan(array $plan, $numReleve = null)
+    {
+        global $user;
 
-        if (isset($ntry->NtryDtls->TxDtls)) {
-            // CRDT (incoming) -> debtor is the counterparty; DBIT (outgoing) -> creditor.
-            if ($cdtDbt === 'CRDT') {
-                $partyTag = 'Dbtr';
-                $acctTag  = 'DbtrAcct';
-                $agtTag   = 'DbtrAgt';
-            } else {
-                $partyTag = 'Cdtr';
-                $acctTag  = 'CdtrAcct';
-                $agtTag   = 'CdtrAgt';
-            }
-
-            foreach ($ntry->NtryDtls->TxDtls as $tx) {
-                $piece = $this->xmlText($tx, ['RmtInf', 'Ustrd']);
-                if ($piece === '') $piece = $this->xmlText($tx, ['AddtlTxInf']);
-                if ($piece !== '') {
-                    $label = ($label === '') ? $piece : ($label . ' | ' . $piece);
-                }
-
-                $candName = $this->xmlText($tx, ['RltdPties', $partyTag, 'Nm']);
-                if ($candName === '') {
-                    $candName = $this->xmlText($tx, ['RltdPties', 'InitgPty', 'Pty', 'Nm']);
-                }
-                if ($candName !== '' && $owner_other === '') $owner_other = $candName;
-
-                $candIban = $this->xmlText($tx, ['RltdPties', $acctTag, 'Id', 'IBAN']);
-                if ($candIban !== '' && $iban_other === '') $iban_other = $candIban;
-
-                $candBic = $this->xmlText($tx, ['RltdAgts', $agtTag, 'FinInstnId', 'BICFI']);
-                if ($candBic === '') {
-                    $candBic = $this->xmlText($tx, ['RltdAgts', $agtTag, 'FinInstnId', 'BIC']);
-                }
-                if ($candBic !== '' && $bank_other === '') $bank_other = $candBic;
-            }
-        }
-        if ($label === '') $label = trim((string) $ntry->AddtlNtryInf);
-
-        $label = $this->limitString($label);
-        $owner_other = $this->limitString($owner_other);
-
-        $ref = '';
-
-        // Build the private note from the transaction ref plus the counterparty IBAN.
-        // The IBAN used to be passed into addline()'s accountancycode slot (a pre-existing
-        // bug — position 10 is $accountancycode, not an IBAN field); it lives in the note
-        // instead so it is neither lost nor polluting the chart of accounts. When an entry
-        // is split into principal + fee, both lines share this same note.
-        $noteParts = array();
-        if (!empty($transactionId)) {
-            $noteParts[] = 'AcctSvcrRef=' . $transactionId;
-        }
-        if ($iban_other !== '') {
-            $noteParts[] = 'CounterpartyIBAN=' . $iban_other;
-        }
-        $note = implode(' ', $noteParts);
-
-        // num_chq carries the AcctSvcrRef so post-import verification can scope per entry
-        // (AGG-2). The column is varchar(50); Revolut's AcctSvcrRef is 32 hex chars, well
-        // within range. Both lines of a fee split keep the SAME num_chq (the original ref)
-        // so StatementSummary::aggregate() folds them back into one logical entry equal to
-        // the original Amt; the two lines are told apart instead by their import keys.
-        $num_chq = $transactionId;
-
-        // v0.0.14: when enabled, an entry whose CAMT.053 <Chrgs> records an embedded fee in
-        // the entry's own currency is posted as two bank lines (principal + fee) that sum
-        // to the original Amt. FeeSplitter is pure and returns null whenever there is
-        // nothing to split (no Chrgs, zero, or a cross-currency fee that belongs to the
-        // other FX leg), so the ordinary single-line path stays the default.
-        $split = getDolGlobalInt('BANKIMPORT_SPLIT_FEES', 0) ? FeeSplitter::extract($ntry) : null;
-
-        if ($split === null) {
-            $lines = array(array(
-                'amount'     => $amount,
-                'label'      => $label,
-                'import_key' => ImportKey::build($transactionId, $iban_other, $owner_other, $amount, $label, $ref, $dateo),
-            ));
-        } else {
-            // The two lines MUST carry different import keys, or the dedup check would drop
-            // the second as a duplicate of the first: ImportKey::build() hashes only the
-            // AcctSvcrRef when one is present and ignores the amount, so we salt the fee
-            // line's ref with ':fee'. With no ref the composite key already differs (the
-            // fee line has a different amount and label).
-            $feeRef = ($transactionId !== '') ? $transactionId . ':fee' : '';
-            $feeLabel = $this->buildFeeLabel($label);
-            $lines = array(
-                array(
-                    'amount'     => $split['main_amount'],
-                    'label'      => $label,
-                    'import_key' => ImportKey::build($transactionId, $iban_other, $owner_other, $split['main_amount'], $label, $ref, $dateo),
-                ),
-                array(
-                    'amount'     => $split['fee_amount'],
-                    'label'      => $feeLabel,
-                    'import_key' => ImportKey::build($feeRef, $iban_other, $owner_other, $split['fee_amount'], $feeLabel, $ref, $dateo),
-                ),
-            );
-        }
-
-        // Dedup on the principal (first) line. Both lines are written atomically below, so
-        // the principal key's presence means the whole entry was already imported. This also
-        // keeps re-imports idempotent if the split setting is later toggled: FeeSplitter only
-        // splits entries that carry an AcctSvcrRef, so a split principal is always keyed by the
-        // bare ref hash (identical to the unsplit single line), while entries without a ref are
-        // never split and stay on their stable amount-composite key in both modes.
-        if ($this->isAlreadyImported($lines[0]['import_key'])) {
+        // Dedup on the principal (first) line. Both lines are written atomically below, so the
+        // principal key's presence means the whole entry was already imported. This keeps
+        // re-imports idempotent even if the split setting is toggled: a split principal is keyed
+        // by the bare ref hash (identical to the unsplit single line), and ref-less entries are
+        // never split, so their amount-composite key is stable across both modes.
+        if ($this->isAlreadyImported($plan['lines'][0]['import_key'])) {
             return 'skipped';
         }
 
@@ -549,22 +661,22 @@ class BankImport extends CommonObject
             $account = new Account($this->db);
             $account->fetch($this->accountid);
 
-            foreach ($lines as $line) {
+            foreach ($plan['lines'] as $line) {
                 $bankline_id = $account->addline(
-                    $dateo,
+                    $plan['dateo'],
                     'VIR',
                     $line['label'],
                     $line['amount'],
-                    $num_chq,
+                    $plan['num_chq'],
                     null, // categorie
                     $user,
-                    $owner_other,
-                    $bank_other,
-                    '',   // accountancycode (NOT the counterparty IBAN; see note above)
-                    $datev,
+                    $plan['owner_other'],
+                    $plan['bank_other'],
+                    '',   // accountancycode (counterparty IBAN lives in the note; see EntryPlan)
+                    $plan['datev'],
                     $numReleve,
                     null, // amount_main_currency
-                    $note
+                    $plan['note']
                 );
 
                 if ($bankline_id <= 0) {
@@ -583,25 +695,6 @@ class BankImport extends CommonObject
     }
 
     /**
-     * Compose the stored label for a broken-out fee line. The base text comes from the
-     * bankimport lang domain (loaded by import.php for this request); the originating
-     * payment's label is appended for traceability so a reader can tell which transaction
-     * the fee belongs to. The result is length-clamped like any other stored label.
-     *
-     * @param string $baseLabel The principal line's label (may be '').
-     * @return string Length-limited fee line label.
-     */
-    private function buildFeeLabel($baseLabel)
-    {
-        global $langs;
-        $text = $langs->trans('BANKIMPORT_FeeLineLabel');
-        if ($baseLabel !== '') {
-            $text .= ': ' . $baseLabel;
-        }
-        return $this->limitString($text);
-    }
-
-    /**
      * Parse an ISO-8601 datetime (e.g. "2026-04-28T16:12:03.829Z") into a
      * Dolibarr server-time timestamp at midnight of that day.
      *
@@ -614,43 +707,6 @@ class BankImport extends CommonObject
         $ts = strtotime($dateString);
         if ($ts === false || $ts <= 0) return 0;
         return dol_mktime(0, 0, 0, (int) date('m', $ts), (int) date('d', $ts), (int) date('Y', $ts));
-    }
-
-    /**
-     * Safely walk a SimpleXML path and return the trimmed string value, or '' if any step is missing.
-     *
-     * Use this only for OPTIONAL CAMT.053 branches (RltdPties/RltdAgts and below). Mandatory
-     * branches (Amt, CdtDbtInd, BookgDt, ValDt) are accessed directly because they are
-     * guaranteed by the schema and a missing one is a real error worth surfacing as a warning.
-     *
-     * Why isset() instead of property_exists(): SimpleXMLElement overrides __isset() (SPL
-     * magic) so isset($node->Foo) correctly returns false when no <Foo> child exists and
-     * true when one does — including for empty containers like <Foo/>. property_exists()
-     * does not honor the magic and would always return false for dynamic children.
-     *
-     * Edge case (intentional behavior): if an empty container exists at an intermediate
-     * step (e.g. <RltdPties/>), isset() at the NEXT step returns false and we return ''.
-     * If the final step lands on an empty element, trim((string) $node) yields ''. Either
-     * way the caller gets '' for "not present" without distinguishing the two cases.
-     *
-     * Known limitation: CAMT.053 allows several elements to repeat (notably <Ustrd> inside
-     * <RmtInf> — one per line of description). This helper returns ONLY THE FIRST sibling
-     * at each step. For Revolut statements, Ustrd never repeats in practice, but other
-     * banks (e.g. Polish ING/mBank) may split descriptions across multiple Ustrd elements
-     * and that text would be silently truncated. Follow-up: when a bank with multi-line
-     * Ustrd is added, change the relevant call sites to iterate, not rely on xmlText().
-     *
-     * @param SimpleXMLElement|null $node Starting node
-     * @param string[] $path Sequence of child element names to traverse
-     * @return string Trimmed text content, or '' if the path doesn't resolve
-     */
-    private function xmlText($node, array $path)
-    {
-        foreach ($path as $key) {
-            if (!($node instanceof SimpleXMLElement) || !isset($node->{$key})) return '';
-            $node = $node->{$key};
-        }
-        return trim((string) $node);
     }
 
     /**
@@ -706,69 +762,23 @@ class BankImport extends CommonObject
      */
     private function processRow($data, $row)
     {
-        global $user;
+        return $this->writePlan($this->planCsvRowData($data), null);
+    }
 
-        // Extract data
+    /**
+     * Parse the Dolibarr-coupled parts of a CSV row (dates via dol_mktime, amount via price2num)
+     * and build its plan. Shared by the real import and the dry-run preview.
+     *
+     * @param array $data Validated CSV row.
+     * @return array Plan from EntryPlan::planCsvRow().
+     */
+    private function planCsvRowData($data)
+    {
         $dateo = $this->parseDate($data[$this->fieldMapping['booking_date']]);
         $datev = $this->parseDate($data[$this->fieldMapping['value_date']]);
-        $label = $this->limitString($data[$this->fieldMapping['payment_purpose']]);
         $amount = price2num($data[$this->fieldMapping['amount']]);
-        $oper = 'VIR';
-        $ref = trim($data[$this->fieldMapping['mandate_reference']]);
-        $categorie = null;
-        $transaction_id = null;
-        $bank_other = $data[$this->fieldMapping['counterparty_bic']];
-        $iban_other = $data[$this->fieldMapping['counterparty_iban']];
-        $owner_other = $data[$this->fieldMapping['counterparty_name']];
 
-        // Generate import key — booking date is included so recurring identical rows on different days don't collide.
-        $import_key = ImportKey::build($transaction_id, $iban_other, $owner_other, $amount, $label, $ref, $dateo);
-
-        // Check if already imported
-        if ($this->isAlreadyImported($import_key)) {
-            return 'skipped';
-        }
-
-        // Prepare notes
-        $note = $this->buildNote($data);
-
-        // Begin transaction
-        $this->db->begin();
-
-        try {
-            $account = new Account($this->db);
-            $account->fetch($this->accountid);
-
-            $bankline_id = $account->addline(
-                $dateo,
-                $oper,
-                $label,
-                $amount,
-                $ref,
-                $categorie,
-                $user,
-                $owner_other,
-                $bank_other,
-                '',   // accountancycode (NOT the counterparty IBAN; IBAN is kept in note via buildNote)
-                $datev,
-                null, // num_releve (CSV has no statement id; verification is XML-only)
-                null, // amount_main_currency
-                $note
-            );
-
-            if ($bankline_id > 0) {
-                // Update import key
-                $this->updateImportKey($bankline_id, $import_key);
-                $this->db->commit();
-                return true;
-            } else {
-                $this->db->rollback();
-                return $account->error;
-            }
-        } catch (Exception $e) {
-            $this->db->rollback();
-            return $e->getMessage();
-        }
+        return EntryPlan::planCsvRow($data, $this->fieldMapping, (float) $amount, $dateo, $datev);
     }
 
     /**
@@ -786,23 +796,6 @@ class BankImport extends CommonObject
             $yyyy = '20' . $yyyy;
         }
         return dol_mktime(0, 0, 0, $mm, $dd, $yyyy);
-    }
-
-    /**
-     * Limit string length
-     *
-     * @param string|null $text Text to limit
-     * @param int $length Maximum length
-     * @param bool $fixed Fixed length
-     * @return string Limited string
-     */
-    private function limitString($text, $length = 255, $fixed = false)
-    {
-        if ($text === null) {
-            return $fixed ? str_repeat(' ', $length) : '';
-        }
-        $limited = substr($text, 0, $length);
-        return $fixed ? str_pad($limited, $length) : $limited;
     }
 
     /**
@@ -843,35 +836,4 @@ class BankImport extends CommonObject
         $sql = "UPDATE " . MAIN_DB_PREFIX . "bank SET import_key = '" . $this->db->escape($import_key) . "' WHERE rowid = " . ((int) $bankline_id);
         return $this->db->query($sql);
     }
-
-    /**
-     * Build note from CSV data
-     *
-     * @param array $data CSV data
-     * @return string Note
-     */
-    private function buildNote($data)
-    {
-        $note = '';
-        $sep = '';
-
-        if (!empty($data[$this->fieldMapping['collector_reference']])) {
-            $note .= $sep . 'Sammlerreferenz=' . $data[$this->fieldMapping['collector_reference']];
-            $sep = ' ';
-        }
-
-        if (!empty($data[$this->fieldMapping['creditor_id']])) {
-            $note .= $sep . 'GlaeubigerId=' . $data[$this->fieldMapping['creditor_id']];
-            $sep = ' ';
-        }
-
-        // Counterparty IBAN goes into the note (not addline()'s accountancycode
-        // slot — see processRow), mirroring the XML path's CounterpartyIBAN= tag.
-        if (!empty($data[$this->fieldMapping['counterparty_iban']])) {
-            $note .= $sep . 'CounterpartyIBAN=' . $data[$this->fieldMapping['counterparty_iban']];
-            $sep = ' ';
-        }
-
-        return $note;
-    }
-} 
+}
