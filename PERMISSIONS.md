@@ -34,10 +34,10 @@ Falls die Berechtigungen nicht funktionieren, können Sie temporär die Berechti
 
 ### In der Datei `custom/bankimport/import.php`:
 
-Ändern Sie Zeile 23-25 von:
+Ändern Sie den Berechtigungs-Check in `import.php` von:
 ```php
 // Security check - check for bankimport rights
-if (!$user->rights->bankimport->import) {
+if (!$user->hasRight('bankimport', 'import')) {
     accessforbidden();
 }
 ```
@@ -45,7 +45,7 @@ if (!$user->rights->bankimport->import) {
 zu:
 ```php
 // Security check - temporarily disabled for testing
-// if (!$user->rights->bankimport->import) {
+// if (!$user->hasRight('bankimport', 'import')) {
 //     accessforbidden();
 // }
 ```

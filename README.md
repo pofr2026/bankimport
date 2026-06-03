@@ -21,14 +21,14 @@ Das Format wird beim Upload automatisch erkannt (Sniffing der ersten Bytes). Das
 - ✅ Unterstützung für UTF-8 und ISO-8859-1 Kodierung (CSV)
 - ✅ Automatische Erkennung und Vermeidung von Duplikaten
 - ✅ Validierung der Daten vor dem Import
-- ✅ Mehrsprachige Unterstützung (Deutsch/Englisch/Französisch)
+- ✅ Mehrsprachige Unterstützung (Deutsch/Englisch)
 - ✅ Verbesserte Fehlerbehandlung und Logging
 - ✅ Sichere Datei-Upload-Validierung
 
 ### System Requirements
 
 - **PHP**: 7.4 oder höher
-- **Dolibarr**: 16.0.0 oder höher
+- **Dolibarr**: 23.0 oder höher (getestet auf 23.0.3)
 - **Aktiviertes Bank-Modul** in Dolibarr
 
 ## Installation
@@ -77,7 +77,6 @@ Nicht alle Felder werden importiert. Das statische Mapping zu Dolibarr-Feldern:
 | 12 | iban_other | Kontonummer/IBAN (Gegenpartei) |
 | 13 | bank_other | BIC (Gegenpartei) |
 | 14 | amount | Betrag |
-| 15 | currency | Währung |
 
 ### XML Field Mapping (camt.053)
 
@@ -157,32 +156,3 @@ Bei Fragen oder Problemen:
 ## Changelog
 
 Siehe [ChangeLog.md](ChangeLog.md) für detaillierte Änderungen.
-
-### Version 0.0.13
-- Auszugsprüfung nach dem Import (XML/CAMT.053): die `<Bal>`/`<TxsSummry>`-Blöcke der Bank werden mit den tatsächlich importierten Buchungen verglichen; das Import-Formular zeigt eine Prüftabelle (Anzahl, Soll-/Haben-Summen, Netto, pro Buchung). Reine Helper-Klasse `BankImport\StatementSummary` mit 24 Unit-Tests
-- `<Stmt><Id>` wird als `num_releve`, `AcctSvcrRef` als `num_chq` pro Zeile gespeichert (Prüfung + native Dolibarr-Kontoabstimmung)
-- Duplikaterkennung jetzt pro Bankkonto: beide Seiten eines Revolut-Währungstauschs (gleiche `AcctSvcrRef` in zwei Konten) werden korrekt importiert, nicht mehr fälschlich übersprungen
-- Korrektur: Gegenpartei-IBAN landete im accountancy-code-Argument von `addline()` (XML und CSV) — jetzt in der Notiz als `CounterpartyIBAN=`
-- **Hinweis:** Die Prüfung vergleicht über `num_releve`; bereits vor v0.0.13 importierte Zeilen haben kein `num_releve`. Ein erneuter Import solcher Auszüge kann sie als fehlend melden. Neue Importe ab v0.0.13 werden korrekt geprüft
-
-### Version 0.0.12
-- PHP-8.2-Warnungen bei optionalen CAMT.053-Branches (`RltdPties`, `RltdAgts`) behoben (sicherer `xmlText()`-Accessor)
-- CSV-Duplikaterkennung: Buchungstag wird in den `import_key` einbezogen — wiederkehrende identische Transaktionen (z. B. monatliche Festgebühr ohne Referenz) werden nicht mehr fälschlich als Duplikat erkannt. **Hinweis:** Bereits importierte CSV-Daten haben den alten Schlüssel; ein erneuter Import derselben Datei kann einmalig Duplikate erzeugen.
-- Neue Klasse `BankImport\ImportKey` (pure helper, ohne Dolibarr-Kopplung) bündelt die Import-Key-Generierung für CSV und XML
-- PHPUnit 10.5 als dev-dependency + Unit-Tests für die Dedup-Logik (`vendor/bin/phpunit` oder `composer test`)
-
-### Version 0.0.11
-- Unterstützung für XML-Import im camt.053-Format (z. B. Revolut Business)
-- Automatische Format-Erkennung (CSV vs. XML) anhand des Datei-Inhalts
-- Duplikat-Erkennung für XML via `AcctSvcrRef` (SHA-1-Hash auf 14 Zeichen)
-- Korrekte Vorzeichen-Behandlung (`CdtDbtInd` DBIT/CRDT)
-- Kontrahent-Auflösung richtungsabhängig (Dbtr bei CRDT, Cdtr bei DBIT)
-
-### Version 0.0.10
-- Erste Veröffentlichung
-- Unterstützung für camt.052 v8 Format
-- UTF-8 und ISO-8859-1 Kodierung
-- Duplikat-Erkennung
-- Verbesserte Fehlerbehandlung
-- Mehrsprachige Unterstützung (Deutsch/Englisch)
-- Sichere Implementierung mit Validierung

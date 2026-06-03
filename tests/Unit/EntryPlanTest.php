@@ -291,4 +291,63 @@ class EntryPlanTest extends TestCase
             'CSV import_key must match the current processRow wiring (transaction_id null, mandate ref as $ref).'
         );
     }
+
+    /**
+     * L1: a missing CSV value date must default to the booking date. validateRow() requires only
+     * booking_date + amount, so a blank Valutadatum column reaches the planner as datev = 0 (the
+     * glue's dol_mktime('') yields a falsy value). The planner must substitute the booking date so
+     * the stored line carries a sensible value date — mirroring the XML path below.
+     */
+    public function test_plan_csv_row_defaults_missing_value_date_to_booking_date(): void
+    {
+        $fieldMapping = [
+            'booking_date'     => 0,
+            'value_date'       => 1,
+            'payment_purpose'  => 2,
+            'amount'           => 3,
+            'mandate_reference' => 4,
+            'counterparty_bic' => 5,
+            'counterparty_iban' => 6,
+            'counterparty_name' => 7,
+            'collector_reference' => 8,
+            'creditor_id'      => 9,
+        ];
+        $data = [
+            '28.04.26', '', 'Office supplies', '-42,50', 'MND-7',
+            'BICDE00', 'DE00123456780000000099', 'Stationers Ltd', '', '',
+        ];
+
+        // datev = 0 represents an empty Valutadatum column.
+        $plan = EntryPlan::planCsvRow($data, $fieldMapping, -42.50, self::DATEO, 0);
+
+        $this->assertSame(
+            self::DATEO,
+            $plan['datev'],
+            'A missing CSV value date must default to the booking date (datev = dateo).'
+        );
+    }
+
+    /**
+     * L1 (symmetric): the same value-date fallback applies to the XML planner, so the
+     * datev = dateo rule lives in one place — the pure planner — for both formats, rather
+     * than being duplicated in the Dolibarr glue.
+     */
+    public function test_plan_xml_defaults_missing_value_date_to_booking_date(): void
+    {
+        $ntry = $this->makeNtry(<<<'XML'
+            <Ntry>
+              <Amt Ccy="EUR">10.00</Amt>
+              <CdtDbtInd>DBIT</CdtDbtInd>
+              <AcctSvcrRef>ref-novaldt</AcctSvcrRef>
+            </Ntry>
+            XML);
+
+        $plan = EntryPlan::planXmlEntry($ntry, self::DATEO, 0, true, self::FEE_BASE);
+
+        $this->assertSame(
+            self::DATEO,
+            $plan['datev'],
+            'A missing XML value date must default to the booking date (datev = dateo).'
+        );
+    }
 }

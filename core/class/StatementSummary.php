@@ -415,7 +415,8 @@ class StatementSummary
      * in parse() only and is paired at Stmt level by the caller.
      *
      * Single source of tolerance: every amount comparison goes through
-     * amountsMatch(), which uses self::AMOUNT_TOLERANCE. No inline abs() anywhere.
+     * amountsMatch(), which delegates to Amount::match() (the shared half-cent
+     * tolerance). No inline abs() anywhere.
      *
      * @param array<string, mixed> $expectedStmt One element of parse()'s output list.
      * @param array<string, mixed> $actual       aggregate() output for the same Stmt.

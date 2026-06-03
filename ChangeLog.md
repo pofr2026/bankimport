@@ -1,6 +1,15 @@
 # Changelog for bankimport module
 
 
+## 0.0.18
+
+- Fix the import crashing on a statement row with an empty value date: an absent CSV `Valutadatum` column (or an XML entry without `<ValDt>`) reached the typed entry planner as an empty value and raised a `TypeError`, aborting that row. The value date now falls back to the booking date for both formats, and that fallback lives in one shared place (`EntryPlan::resolveValueDate()`) used by the CSV and XML planners. Covered by two new unit tests (62 tests total).
+- Use Dolibarr's native `$user->hasRight('bankimport', 'import')` for the permission check instead of the deprecated `$user->rights->bankimport->import` dynamic-property chain, which emits a warning on PHP 8.2 when the permission branch is unset.
+- Harden XML parsing with `LIBXML_NONET` (defense-in-depth for uploaded files; libxml already disables external entities by default).
+- Make the 10 MB upload limit a single source of truth: a new `BankImport::MAX_FILE_SIZE` constant backs the upload check, and a `maxFileSizeLabel()` helper renders the "10 MB" text shown in the upload error, the setup page and the import help — previously the value, and its spelling, were hardcoded in three places.
+- Documentation and cleanup: state the actually-supported Dolibarr version (23.0) consistently across the README, INSTALL and language files; have the README and INSTALL link to this changelog instead of keeping a drifting copy; mention XML (CAMT.053) import in INSTALL; remove four never-read CSV field-mapping columns, seven unused translation keys and the empty French translation; and correct or clarify several code comments (the Haspa date-format assumption, the `MIN_FEE` vs. amount-tolerance rationale, and a stale tolerance docblock reference).
+
+
 ## 0.0.17
 
 - Add cross-statement continuity checking for XML (CAMT.053) imports: the opening/closing booking balances (`OPBD`/`CLBD`) the bank declares in each imported statement are now persisted per account and currency, and after every import the whole stored chain is re-checked for the ledger invariant `CLBD_N == OPBD_(N+1)`. A break in that chain means a statement file is likely missing between two imported ones — something the running totals in `llx_bank` cannot reveal, because the absent rows simply are not there and the stored total stays internally consistent over whatever was imported. Gaps are surfaced as a warning plus a detail table on the import screen. Implemented as a pure `BankImport\StatementContinuity` helper with 8 unit tests.

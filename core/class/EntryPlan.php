@@ -52,6 +52,8 @@ class EntryPlan
      */
     public static function planXmlEntry(\SimpleXMLElement $ntry, int $dateo, int $datev, bool $splitFees, string $feeLabelBase): array
     {
+        $datev = self::resolveValueDate($dateo, $datev);
+
         $amount = (float) $ntry->Amt;
         $cdtDbt = (string) $ntry->CdtDbtInd;
         if ($cdtDbt === 'DBIT') {
@@ -189,6 +191,8 @@ class EntryPlan
      */
     public static function planCsvRow(array $data, array $fieldMapping, float $amount, int $dateo, int $datev): array
     {
+        $datev = self::resolveValueDate($dateo, $datev);
+
         $label       = self::limitString($data[$fieldMapping['payment_purpose']]);
         $ref         = trim($data[$fieldMapping['mandate_reference']]);
         $bank_other  = $data[$fieldMapping['counterparty_bic']];
@@ -215,6 +219,20 @@ class EntryPlan
                 'is_fee'     => false,
             )),
         );
+    }
+
+    /**
+     * A missing value date defaults to the booking date: CAMT.053 may omit <ValDt> and a Haspa
+     * CSV may leave the Valutadatum column blank (it reaches the planner as 0 after the glue's
+     * int cast). Shared by both planners so this rule and its rationale have a single home.
+     *
+     * @param int $dateo Booking-date timestamp (assumed already validated as > 0).
+     * @param int $datev Value-date timestamp, or <= 0 when absent.
+     * @return int $datev when present, else $dateo.
+     */
+    private static function resolveValueDate(int $dateo, int $datev): int
+    {
+        return $datev > 0 ? $datev : $dateo;
     }
 
     /**

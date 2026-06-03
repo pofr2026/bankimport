@@ -42,10 +42,14 @@ namespace BankImport;
 class FeeSplitter
 {
     /**
-     * Smallest fee worth a dedicated line — half a cent, matching the tolerance
-     * StatementSummary uses elsewhere. A <Chrgs> total that rounds below this is
-     * treated as "no fee" so we never emit a 0.00 line (and the
-     * fee-is-strictly-a-cost contract holds).
+     * Smallest fee worth a dedicated line: half a cent. This is the rounding boundary of a
+     * 2-decimal currency — a <Chrgs> total below it would display as 0.00, so we treat it as
+     * "no fee" and never emit a 0.00 line (keeping the fee-is-strictly-a-cost contract).
+     *
+     * It numerically equals Amount::TOLERANCE because both derive from the same half-cent
+     * boundary, but the two are deliberately kept separate: this is a "worth splitting"
+     * threshold, whereas TOLERANCE is an equality epsilon. Tightening one must not silently
+     * move the other.
      */
     private const MIN_FEE = 0.005;
 

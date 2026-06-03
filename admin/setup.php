@@ -51,6 +51,7 @@ if (!$res) {
 	die("Include of main fails");
 }
 require_once DOL_DOCUMENT_ROOT.'/core/lib/admin.lib.php';
+require_once __DIR__ . '/../core/class/BankImport.class.php';
 
 // Security check
 if (!$user->admin) {
@@ -104,7 +105,7 @@ print '</tr>';
 
 print '<tr class="oddeven">';
 print '<td>'.$langs->trans("BANKIMPORT_Setup_Max_File_Size").'</td>';
-print '<td>10 MB</td>';
+print '<td>'.BankImport::maxFileSizeLabel().'</td>';
 print '</tr>';
 
 print '<tr class="oddeven">';

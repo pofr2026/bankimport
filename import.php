@@ -56,8 +56,11 @@ require_once DOL_DOCUMENT_ROOT.'/core/lib/files.lib.php';
 
 require_once __DIR__ . '/core/class/BankImport.class.php';
 
-// Security check - check for bankimport rights
-if (!$user->rights->bankimport->import) {
+// Security check - check for bankimport rights.
+// Use the native hasRight() accessor (Dolibarr >= 16) rather than the deprecated
+// dynamic-property $user->rights->...->... chain, which on PHP 8.2 emits a Warning
+// when an intermediate branch is unset.
+if (!$user->hasRight('bankimport', 'import')) {
     accessforbidden();
 }
 
@@ -487,7 +490,9 @@ document.addEventListener("DOMContentLoaded", function() {
     print '<strong>'.$langs->trans("BANKIMPORT_Help_Title").'</strong><br>';
     print $langs->trans("BANKIMPORT_Help_Description").'<br><br>';
     print '<strong>'.$langs->trans("BANKIMPORT_Help_Format").'</strong><br>';
-    print $langs->trans("BANKIMPORT_Help_Format_Details");
+    // The %s in the lang string is filled from MAX_FILE_SIZE so the advertised limit and the
+    // enforced one share a single source of truth (see BankImport::MAX_FILE_SIZE).
+    print $langs->trans("BANKIMPORT_Help_Format_Details", BankImport::maxFileSizeLabel());
     print '</div>';
 }
 

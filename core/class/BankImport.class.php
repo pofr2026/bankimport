@@ -38,6 +38,13 @@ use BankImport\EntryPlan;
 class BankImport extends CommonObject
 {
     /**
+     * Maximum accepted size of an uploaded statement file, in bytes (10 MB). Single source
+     * of truth for the upload guard and for what setup.php advertises, so the limit can never
+     * drift between enforcement and documentation.
+     */
+    public const MAX_FILE_SIZE = 10 * 1024 * 1024;
+
+    /**
      * @var DoliDB Database handler.
      */
     public $db;
@@ -73,10 +80,8 @@ class BankImport extends CommonObject
      * @var array CSV field mapping
      */
     public $fieldMapping = array(
-        'account' => 0,
         'booking_date' => 1,
         'value_date' => 2,
-        'booking_text' => 3,
         'payment_purpose' => 4,
         'creditor_id' => 5,
         'mandate_reference' => 6,
@@ -84,9 +89,7 @@ class BankImport extends CommonObject
         'counterparty_name' => 11,
         'counterparty_iban' => 12,
         'counterparty_bic' => 13,
-        'amount' => 14,
-        'currency' => 15,
-        'info' => 16
+        'amount' => 14
     );
 
     /**
@@ -147,6 +150,18 @@ class BankImport extends CommonObject
     }
 
     /**
+     * Human-readable form of the upload limit (e.g. "10 MB"). Centralises the byte->MB conversion
+     * and the unit label so every user-facing mention — the upload error, the setup page and the
+     * import help — derives from MAX_FILE_SIZE and stays spelled identically.
+     *
+     * @return string
+     */
+    public static function maxFileSizeLabel()
+    {
+        return (self::MAX_FILE_SIZE / 1024 / 1024) . ' MB';
+    }
+
+    /**
      * Validate uploaded file
      *
      * @param array $file $_FILES array element
@@ -164,8 +179,8 @@ class BankImport extends CommonObject
             return false;
         }
 
-        if ($file['size'] > 10 * 1024 * 1024) { // 10MB limit
-            $this->error = 'File too large (max 10MB)';
+        if ($file['size'] > self::MAX_FILE_SIZE) {
+            $this->error = 'File too large (max ' . self::maxFileSizeLabel() . ')';
             return false;
         }
 
@@ -479,7 +494,10 @@ class BankImport extends CommonObject
         $content = preg_replace('/\sxmlns="[^"]+"/', '', $content, 1);
 
         $prevUseErrors = libxml_use_internal_errors(true);
-        $xml = simplexml_load_string($content);
+        // LIBXML_NONET forbids any network access during parsing. libxml >= 2.9 already
+        // disables external-entity expansion by default, so this is defense-in-depth for an
+        // uploaded, attacker-influenced file rather than a fix for an active hole.
+        $xml = simplexml_load_string($content, 'SimpleXMLElement', LIBXML_NONET);
         if ($xml === false) {
             $errors = libxml_get_errors();
             $error = 'Invalid XML';
@@ -762,8 +780,10 @@ class BankImport extends CommonObject
         if (!$dateo) {
             return array('error' => 'Missing or invalid booking date');
         }
+        // The value-date fallback (datev defaults to dateo when absent) now lives in EntryPlan,
+        // shared with the CSV path; here we just parse and pass the result through. parseIsoDate()
+        // already returns an int (0 when absent), like $dateo above, so neither needs a cast.
         $datev = $this->parseIsoDate($valDtTm);
-        if (!$datev) $datev = $dateo;
 
         $plan = EntryPlan::planXmlEntry($ntry, $dateo, $datev, $this->splitFeesEnabled(), $langs->trans('BANKIMPORT_FeeLineLabel'));
         return array('plan' => $plan);
@@ -910,17 +930,26 @@ class BankImport extends CommonObject
      */
     private function planCsvRowData($data)
     {
-        $dateo = $this->parseDate($data[$this->fieldMapping['booking_date']]);
-        $datev = $this->parseDate($data[$this->fieldMapping['value_date']]);
+        // parseDate() returns '' for an empty/unparseable date column; cast to int so the typed
+        // planner receives 0 (its value-date fallback then substitutes the booking date) rather
+        // than hitting a TypeError on the int parameter.
+        $dateo = (int) $this->parseDate($data[$this->fieldMapping['booking_date']]);
+        $datev = (int) $this->parseDate($data[$this->fieldMapping['value_date']]);
         $amount = price2num($data[$this->fieldMapping['amount']]);
 
         return EntryPlan::planCsvRow($data, $this->fieldMapping, (float) $amount, $dateo, $datev);
     }
 
     /**
-     * Parse date from DD.MM.YY format
+     * Parse a Haspa CSV date in the fixed DD.MM.YY format into a timestamp.
      *
-     * @param string $dateString Date string
+     * The character positions are hardcoded (offsets 0/3/6) because the Haspa camt.052
+     * export always emits a 2-digit year with '.' separators. A file with a 4-digit year
+     * would be misread (e.g. "2024" -> substr gives "20", then the "20" prefix yields
+     * 2020), so this helper is intentionally specific to the documented Haspa layout and
+     * must not be reused for other date formats.
+     *
+     * @param string $dateString Date string in DD.MM.YY
      * @return int Timestamp
      */
     private function parseDate($dateString)
