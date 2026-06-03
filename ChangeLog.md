@@ -1,7 +1,7 @@
 # Changelog for bankimport module
 
 
-## Unreleased
+## 0.0.17
 
 - Add cross-statement continuity checking for XML (CAMT.053) imports: the opening/closing booking balances (`OPBD`/`CLBD`) the bank declares in each imported statement are now persisted per account and currency, and after every import the whole stored chain is re-checked for the ledger invariant `CLBD_N == OPBD_(N+1)`. A break in that chain means a statement file is likely missing between two imported ones — something the running totals in `llx_bank` cannot reveal, because the absent rows simply are not there and the stored total stays internally consistent over whatever was imported. Gaps are surfaced as a warning plus a detail table on the import screen. Implemented as a pure `BankImport\StatementContinuity` helper with 8 unit tests.
 - Each currency forms an independent chain (a multi-currency Revolut account emits one statement per currency), statements are ordered by their electronic sequence number rather than import order, and balance comparison uses the existing half-cent tolerance — now extracted into a shared `BankImport\Amount` helper so verification and continuity share one source of truth.
