@@ -22,11 +22,13 @@ require_once DOL_DOCUMENT_ROOT.'/compta/bank/class/account.class.php';
 // runtime does not register our composer PSR-4 autoloader.
 require_once __DIR__ . '/ImportKey.php';
 require_once __DIR__ . '/StatementSummary.php';
+require_once __DIR__ . '/StatementContinuity.php';
 require_once __DIR__ . '/FeeSplitter.php';
 require_once __DIR__ . '/EntryPlan.php';
 
 use BankImport\ImportKey;
 use BankImport\StatementSummary;
+use BankImport\StatementContinuity;
 use BankImport\FeeSplitter;
 use BankImport\EntryPlan;
 
@@ -439,9 +441,20 @@ class BankImport extends CommonObject
             return $result;
         }
 
+        // Parse the verification-relevant blocks once and feed both consumers:
+        // per-statement verification and cross-statement continuity both work off
+        // the same StatementSummary::parse() output, so there is no reason to walk
+        // the document twice.
+        $parsedStatements = StatementSummary::parse($xml);
+
         // Post-import verification: compare the bank's own summary blocks
         // (<Bal>/<TxsSummry>) against what actually landed in llx_bank.
-        $result['verification'] = $this->verifyImport($xml);
+        $result['verification'] = $this->verifyImport($parsedStatements);
+
+        // Cross-statement continuity: persist this file's declared opening/closing
+        // balances, then re-check the whole stored chain for a break that would
+        // betray a statement file the user never imported (CLBD_N != OPBD_(N+1)).
+        $result['continuity'] = $this->checkContinuity($parsedStatements);
 
         return $result;
     }
@@ -498,13 +511,13 @@ class BankImport extends CommonObject
      * single 'error'/'skipped' record), then aggregate() + verify() each Stmt
      * whose preconditions are sound.
      *
-     * @param SimpleXMLElement $xml Root <Document> element (default namespace already stripped)
+     * @param array<int, array<string, mixed>> $parsedStatements StatementSummary::parse() output (one element per <Stmt>)
      * @return array<int, array<string, mixed>> Flat list of check-result records across all stmts
      */
-    private function verifyImport($xml)
+    private function verifyImport($parsedStatements)
     {
         $checks = array();
-        foreach (StatementSummary::parse($xml) as $expectedStmt) {
+        foreach ($parsedStatements as $expectedStmt) {
             $numReleve = (string) $expectedStmt['id'];
             $scopeEmpty = ($numReleve === '');
 
@@ -581,6 +594,129 @@ class BankImport extends CommonObject
             $rows[] = array('ref' => $ref, 'amount' => (float) $obj->amount);
         }
         return array('query_failed' => false, 'rows' => $rows);
+    }
+
+    /**
+     * Persist the imported file's per-statement declared balances, then re-run
+     * the cross-statement continuity check over the WHOLE stored chain.
+     *
+     * Continuity is checked against the persisted history, not merely the
+     * statements inside the file being imported: the defect we are hunting is a
+     * gap between a file imported now and one imported weeks earlier, so the
+     * stored chain is the only place that gap is visible. The parsed statements
+     * carry per-Stmt OPBD/CLBD/currency/seq; we upsert each, then read every
+     * statement stored for this account back and hand the chain to the pure
+     * StatementContinuity::check().
+     *
+     * @param array<int, array<string, mixed>> $parsedStatements StatementSummary::parse() output (one element per <Stmt>)
+     * @return array<int, array<string, mixed>> Continuity gap records (empty when the chain is intact)
+     */
+    private function checkContinuity($parsedStatements)
+    {
+        foreach ($parsedStatements as $stmt) {
+            $this->persistStatementBalances($stmt);
+        }
+        return StatementContinuity::check($this->readStoredStatements());
+    }
+
+    /**
+     * Upsert one statement's declared opening/closing balances into
+     * llx_bankimport_statement, keyed by (fk_account, currency, electronic_seq_nb).
+     *
+     * Idempotent via delete-then-insert on the unique key, so re-importing the
+     * same statement file refreshes the row instead of duplicating it. The
+     * delete-then-insert pair (rather than INSERT ... ON DUPLICATE KEY UPDATE) is
+     * used deliberately so the SQL stays portable across the DB drivers Dolibarr
+     * supports.
+     *
+     * Statements that cannot anchor a continuity chain are skipped silently:
+     * continuity needs a sequence number to order the chain, a currency to scope
+     * it, and both balances to compare. A statement missing any of these
+     * contributes nothing to the check and must not pollute the table with an
+     * unorderable row.
+     *
+     * @param array<string, mixed> $stmt One element of StatementSummary::parse()
+     * @return void
+     */
+    private function persistStatementBalances($stmt)
+    {
+        $seq = (string) ($stmt['electronic_seq_nb'] ?? '');
+        $currency = (string) ($stmt['currency'] ?? '');
+        if ($seq === '' || $currency === '' || $stmt['opbd'] === null || $stmt['clbd'] === null) {
+            return;
+        }
+
+        $table = MAIN_DB_PREFIX . 'bankimport_statement';
+        $accountId = (int) $this->accountid;
+
+        // Wrap the delete-then-insert in a transaction so the refresh is atomic:
+        // without it, an INSERT that fails after a successful DELETE would lose the
+        // statement's previously stored balances and tear a hole in the very chain
+        // this method exists to protect. On any failure we roll back and leave the
+        // prior row untouched.
+        $this->db->begin();
+
+        $del = "DELETE FROM " . $table
+            . " WHERE fk_account = " . $accountId
+            . " AND currency = '" . $this->db->escape($currency) . "'"
+            . " AND electronic_seq_nb = '" . $this->db->escape($seq) . "'";
+        if (!$this->db->query($del)) {
+            dol_syslog(__CLASS__ . '::persistStatementBalances delete ' . $this->db->lasterror(), LOG_ERR);
+            $this->db->rollback();
+            return;
+        }
+
+        // number_format with an explicit '.' decimal separator and 8 fractional
+        // digits matches the double(24,8) column exactly and is locale-independent
+        // on every PHP version (the module's declared phpmin is 7.4, where a
+        // (string) cast of a float would honour LC_NUMERIC and could emit a comma).
+        $sql = "INSERT INTO " . $table
+            . " (fk_account, electronic_seq_nb, num_releve, currency, opbd, clbd, date_import) VALUES ("
+            . $accountId . ", "
+            . "'" . $this->db->escape($seq) . "', "
+            . "'" . $this->db->escape((string) ($stmt['id'] ?? '')) . "', "
+            . "'" . $this->db->escape($currency) . "', "
+            . number_format((float) $stmt['opbd'], 8, '.', '') . ", "
+            . number_format((float) $stmt['clbd'], 8, '.', '') . ", "
+            . "'" . $this->db->idate(dol_now()) . "')";
+        if (!$this->db->query($sql)) {
+            dol_syslog(__CLASS__ . '::persistStatementBalances insert ' . $this->db->lasterror(), LOG_ERR);
+            $this->db->rollback();
+            return;
+        }
+
+        $this->db->commit();
+    }
+
+    /**
+     * Read every persisted statement for the configured account, projected into
+     * the shape StatementContinuity::check() consumes. The pure checker does the
+     * per-currency grouping and sequence ordering itself, so this stays a plain
+     * unordered SELECT.
+     *
+     * @return list<array{seq: string, currency: string, opbd: float, clbd: float, id: string}>
+     */
+    private function readStoredStatements()
+    {
+        $rows = array();
+        $sql = "SELECT electronic_seq_nb, num_releve, currency, opbd, clbd FROM "
+            . MAIN_DB_PREFIX . "bankimport_statement"
+            . " WHERE fk_account = " . ((int) $this->accountid);
+        $resql = $this->db->query($sql);
+        if (!$resql) {
+            dol_syslog(__CLASS__ . '::readStoredStatements ' . $this->db->lasterror(), LOG_ERR);
+            return $rows;
+        }
+        while ($obj = $this->db->fetch_object($resql)) {
+            $rows[] = array(
+                'seq'      => (string) $obj->electronic_seq_nb,
+                'currency' => (string) $obj->currency,
+                'opbd'     => (float) $obj->opbd,
+                'clbd'     => (float) $obj->clbd,
+                'id'       => (string) $obj->num_releve,
+            );
+        }
+        return $rows;
     }
 
     /**

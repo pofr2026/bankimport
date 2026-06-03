@@ -215,6 +215,15 @@ if ($action == 'commit') {
                 setEventMessages($langs->trans("BANKIMPORT_Verification_AllPassed"), null, 'mesgs');
             }
         }
+
+        // Cross-statement continuity summary (XML/CAMT.053 only). A non-empty list
+        // means the bank's own balance chain has a break — most often a statement
+        // file missing between two imported ones. Surfaced as a warning, not an
+        // error: the rows that WERE imported are fine; the user just needs to
+        // import the missing statement(s).
+        if (!empty($result['continuity'])) {
+            setEventMessages($langs->trans("BANKIMPORT_Continuity_Failed", count($result['continuity'])), null, 'warnings');
+        }
     }
 }
 
@@ -252,6 +261,31 @@ if (!empty($result['verification'])) {
         print '<td>'.dol_escape_htmltag($checkLabel).'</td>';
         print '<td style="color:'.$color.';font-weight:bold;">'.dol_escape_htmltag($statusText).'</td>';
         print '<td>'.dol_escape_htmltag($check['detail']).'</td>';
+        print '</tr>';
+    }
+    print '</table>';
+    print '<br>';
+}
+
+// Cross-statement continuity gaps (after a commit). Listed separately from the
+// per-statement verification table above because it answers a different question:
+// not "did this statement import correctly?" but "is a statement file missing
+// from the chain?".
+if (!empty($result['continuity'])) {
+    print load_fiche_titre($langs->trans("BANKIMPORT_Continuity_Title"), '', '');
+    print '<table class="noborder centpercent">';
+    print '<tr class="liste_titre">';
+    print '<td>'.$langs->trans("BANKIMPORT_Continuity_Currency").'</td>';
+    print '<td>'.$langs->trans("BANKIMPORT_Continuity_Between").'</td>';
+    print '<td class="right">'.$langs->trans("BANKIMPORT_Continuity_ExpectedOpening").'</td>';
+    print '<td class="right">'.$langs->trans("BANKIMPORT_Continuity_ActualOpening").'</td>';
+    print '</tr>';
+    foreach ($result['continuity'] as $gap) {
+        print '<tr class="oddeven">';
+        print '<td>'.dol_escape_htmltag($gap['currency']).'</td>';
+        print '<td>'.dol_escape_htmltag($gap['from_id'].' → '.$gap['to_id']).'</td>';
+        print '<td class="right">'.price($gap['expected_opbd']).'</td>';
+        print '<td class="right" style="color:red;font-weight:bold;">'.price($gap['actual_opbd']).'</td>';
         print '</tr>';
     }
     print '</table>';

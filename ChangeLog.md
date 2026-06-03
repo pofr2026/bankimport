@@ -1,6 +1,15 @@
 # Changelog for bankimport module
 
 
+## Unreleased
+
+- Add cross-statement continuity checking for XML (CAMT.053) imports: the opening/closing booking balances (`OPBD`/`CLBD`) the bank declares in each imported statement are now persisted per account and currency, and after every import the whole stored chain is re-checked for the ledger invariant `CLBD_N == OPBD_(N+1)`. A break in that chain means a statement file is likely missing between two imported ones — something the running totals in `llx_bank` cannot reveal, because the absent rows simply are not there and the stored total stays internally consistent over whatever was imported. Gaps are surfaced as a warning plus a detail table on the import screen. Implemented as a pure `BankImport\StatementContinuity` helper with 8 unit tests.
+- Each currency forms an independent chain (a multi-currency Revolut account emits one statement per currency), statements are ordered by their electronic sequence number rather than import order, and balance comparison uses the existing half-cent tolerance — now extracted into a shared `BankImport\Amount` helper so verification and continuity share one source of truth.
+- Persistence is idempotent: re-importing the same statement refreshes its stored balances instead of duplicating them, so the continuity result is stable across re-imports. Statements without a sequence number, currency, or both balances are skipped (they cannot anchor a chain).
+- Add a `llx_bankimport_statement` table (created on module activation) and the continuity strings to the English and German language files.
+- **Scope note:** this catches missing statement *files*, not transactions added to the account by other means (e.g. manual entries) — a manual row does not change the bank-declared balances, so the chain still reads as continuous. Catching out-of-band entries needs a separate "declared closing balance vs. actual ledger balance" check, planned as its own feature.
+
+
 ## 0.0.16
 
 - Add an import preview: uploading a statement now shows every line that would be imported — with a per-line new/duplicate status and any embedded-fee splits highlighted — and writes nothing until you press **Confirm**; **Cancel** discards it. This removes the "imported into the wrong account, now delete it all by hand" trap. Implemented as a two-step preview→commit flow that parks the upload server-side and re-parses it on confirm, so what you preview is exactly what gets written.

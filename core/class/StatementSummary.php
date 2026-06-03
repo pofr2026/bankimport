@@ -2,6 +2,11 @@
 
 namespace BankImport;
 
+// Shared half-cent tolerance lives in Amount. Required explicitly so this helper
+// is self-contained under Dolibarr's runtime, which does not register the module's
+// composer autoloader (BankImport.class.php loads each helper with a flat require).
+require_once __DIR__ . '/Amount.php';
+
 /**
  * Pure helper that parses the verification-relevant blocks of a CAMT.053 document
  * (<Bal>, <TxsSummry>, <Ntry>) and aggregates per-statement state for comparison
@@ -15,23 +20,15 @@ namespace BankImport;
 class StatementSummary
 {
     /**
-     * Maximum absolute difference between two amounts that verify() still
-     * considers equal — half a cent. The single source of truth for numeric
-     * tolerance across the verification feature (AGG-6 / VERIFY-5). Inline
-     * abs() comparisons are forbidden; every amount check routes through
-     * amountsMatch() below.
-     */
-    private const AMOUNT_TOLERANCE = 0.005;
-
-    /**
-     * Compare two amounts with the half-cent tolerance. Single helper used
-     * by every sum / per-entry / unaddressable check in verify(), so the
-     * tolerance lives in exactly one place and can be tightened or loosened
-     * in one edit if practice demands it.
+     * Compare two amounts with the half-cent tolerance. Thin wrapper kept so the
+     * many call sites below read naturally; the tolerance and the comparison both
+     * live in the shared Amount helper (AGG-6 / VERIFY-5), so verification and
+     * reconciliation share one source of truth. Inline abs() comparisons remain
+     * forbidden; every amount check routes through here or Amount::match() directly.
      */
     private static function amountsMatch(float $a, float $b): bool
     {
-        return abs($a - $b) < self::AMOUNT_TOLERANCE;
+        return Amount::match($a, $b);
     }
 
     /**

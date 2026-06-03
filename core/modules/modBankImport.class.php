@@ -70,4 +70,40 @@ class modBankImport extends DolibarrModules
             'user'      => 0
         );
     }
+
+    /**
+     * Module activation: create this module's own tables.
+     *
+     * _load_tables() runs every .sql file under the module's sql/ directory
+     * (rewriting the llx_ prefix to the instance prefix), so activating — or
+     * re-activating — the module is what provisions llx_bankimport_statement.
+     * The loader tolerates an already-existing table, so re-activation is safe.
+     *
+     * @param string $options Options when enabling module ('', 'noboxes', …)
+     * @return int 1 on success, <= 0 on failure
+     */
+    public function init($options = '')
+    {
+        $result = $this->_load_tables('/bankimport/sql/');
+        if ($result < 0) {
+            return -1;
+        }
+
+        $sql = array();
+        return $this->_init($sql, $options);
+    }
+
+    /**
+     * Module deactivation. The statement-balance table is intentionally LEFT IN
+     * PLACE so the continuity history survives a deactivate/reactivate cycle
+     * (e.g. during an upgrade); dropping it would silently lose the chain.
+     *
+     * @param string $options Options when disabling module
+     * @return int 1 on success, <= 0 on failure
+     */
+    public function remove($options = '')
+    {
+        $sql = array();
+        return $this->_remove($sql, $options);
+    }
 }
