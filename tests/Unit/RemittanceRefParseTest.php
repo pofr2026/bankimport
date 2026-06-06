@@ -6,18 +6,16 @@ use BankImport\RemittanceRef;
 use PHPUnit\Framework\TestCase;
 
 /**
- * RED test driving the GREEN implementation of RemittanceRef::parse().
+ * RED tests driving the GREEN implementation of RemittanceRef::parse().
  *
- * The keystone (spec §3) needs, per imported CAMT entry, the matching keys that
- * survive ingestion only if we extract them now: the structured creditor reference
- * (QRR / SCOR), the Dolibarr Swico S1 billing-info invoice-ref token (/10/), and the
- * counterparty IBAN. parse() is a pure SimpleXML→array helper (zero Dolibarr coupling),
- * mirroring StatementSummary — so it is unit-testable without the runtime.
+ * The keystone (spec §3) needs, per imported CAMT entry, the structured keys that survive ingestion
+ * only if we extract them now: the structured creditor reference (QRR / SCOR) and the Dolibarr Swico
+ * S1 billing-info invoice-ref token (/10/). parse() is a pure SimpleXML→array helper (zero Dolibarr
+ * coupling), mirroring StatementSummary. The counterparty IBAN is NOT this class's concern — EntryPlan
+ * already derives it (direction-aware), and EntryPlanTest already covers that, so re-extracting it here
+ * would duplicate the logic (DRY).
  *
- * Test 1 is the happy path on a single synthetic <Ntry>; the edge cases the external
- * reviews care about (SCOR/RF instead of QRR, Swico in <Ustrd> not <AddtlRmtInf>, DBIT
- * direction picking the creditor IBAN, missing blocks) follow once this anchors the
- * return shape — minimum XML per branch, per [[feedback-test-factories-yagni]].
+ * Minimum XML per branch, per [[feedback-test-factories-yagni]].
  */
 class RemittanceRefParseTest extends TestCase
 {
@@ -32,32 +30,22 @@ class RemittanceRefParseTest extends TestCase
     }
 
     /**
-     * Happy path: a CRDT entry — a customer paid our Swiss QR-bill. The structured QRR
-     * reference sits in Strd/CdtrRefInf, the Dolibarr billing-info (/10/ = invoice ref)
-     * in Strd/AddtlRmtInf, and the counterparty (debtor) IBAN under RltdPties. Because
-     * the entry is a credit, the counterparty is the DEBTOR side.
+     * Happy path: a Swiss QR-bill payment. The structured QRR reference sits in Strd/CdtrRefInf, and
+     * the Dolibarr billing-info (/10/ = invoice ref) in Strd/AddtlRmtInf.
      */
-    public function testParsesQrrSwicoTokenAndCounterpartyIban(): void
+    public function testParsesQrrAndSwicoToken(): void
     {
         $ntry = $this->loadNtry(
             '<Ntry xmlns="urn:iso:std:iso:20022:tech:xsd:camt.053.001.08">'
             . '<Amt Ccy="CHF">15.02</Amt>'
             . '<CdtDbtInd>CRDT</CdtDbtInd>'
-            . '<NtryDtls><TxDtls>'
-            .   '<RmtInf>'
-            .     '<Strd>'
-            .       '<CdtrRefInf>'
-            .         '<Tp><CdOrPrtry><Prtry>QRR</Prtry></CdOrPrtry></Tp>'
-            .         '<Ref>210000000003139471430009017</Ref>'
-            .       '</CdtrRefInf>'
-            .       '<AddtlRmtInf>//S1/10/TC1-2605-0158/11/260528/30/CHE-106.017.086</AddtlRmtInf>'
-            .     '</Strd>'
-            .   '</RmtInf>'
-            .   '<RltdPties>'
-            .     '<Dbtr><Nm>TakePOS generic customer</Nm></Dbtr>'
-            .     '<DbtrAcct><Id><IBAN>CH9300762011623852957</IBAN></Id></DbtrAcct>'
-            .   '</RltdPties>'
-            . '</TxDtls></NtryDtls>'
+            . '<NtryDtls><TxDtls><RmtInf><Strd>'
+            .   '<CdtrRefInf>'
+            .     '<Tp><CdOrPrtry><Prtry>QRR</Prtry></CdOrPrtry></Tp>'
+            .     '<Ref>210000000003139471430009017</Ref>'
+            .   '</CdtrRefInf>'
+            .   '<AddtlRmtInf>//S1/10/TC1-2605-0158/11/260528/30/CHE-106.017.086</AddtlRmtInf>'
+            . '</Strd></RmtInf></TxDtls></NtryDtls>'
             . '</Ntry>'
         );
 
@@ -66,7 +54,6 @@ class RemittanceRefParseTest extends TestCase
         $this->assertSame('210000000003139471430009017', $result['structured_ref']);
         $this->assertSame('QRR', $result['structured_ref_type']);
         $this->assertSame('TC1-2605-0158', $result['invoice_ref_token']);
-        $this->assertSame('CH9300762011623852957', $result['counterparty_iban']);
     }
 
     /**
@@ -115,50 +102,6 @@ class RemittanceRefParseTest extends TestCase
     }
 
     /**
-     * Debit entry (we paid a supplier): the counterparty is now the CREDITOR side, so the IBAN must
-     * be read from CdtrAcct rather than DbtrAcct.
-     */
-    public function testPicksCreditorIbanOnDebitDirection(): void
-    {
-        $ntry = $this->loadNtry(
-            '<Ntry xmlns="urn:iso:std:iso:20022:tech:xsd:camt.053.001.08">'
-            . '<Amt Ccy="CHF">675.65</Amt>'
-            . '<CdtDbtInd>DBIT</CdtDbtInd>'
-            . '<NtryDtls><TxDtls><RltdPties>'
-            .   '<Cdtr><Nm>Supplier AG</Nm></Cdtr>'
-            .   '<CdtrAcct><Id><IBAN>CH5604835012345678009</IBAN></Id></CdtrAcct>'
-            . '</RltdPties></TxDtls></NtryDtls>'
-            . '</Ntry>'
-        );
-
-        $result = RemittanceRef::parse($ntry);
-
-        $this->assertSame('CH5604835012345678009', $result['counterparty_iban']);
-    }
-
-    /**
-     * A bare entry with neither RmtInf nor RltdPties (e.g. a bank fee line) must yield four nulls and
-     * no PHP warning — failOnWarning is on, so a stray notice would fail the suite.
-     */
-    public function testReturnsAllNullWhenBlocksAbsent(): void
-    {
-        $ntry = $this->loadNtry(
-            '<Ntry xmlns="urn:iso:std:iso:20022:tech:xsd:camt.053.001.08">'
-            . '<Amt Ccy="CHF">10.00</Amt>'
-            . '<CdtDbtInd>DBIT</CdtDbtInd>'
-            . '<NtryDtls><TxDtls></TxDtls></NtryDtls>'
-            . '</Ntry>'
-        );
-
-        $result = RemittanceRef::parse($ntry);
-
-        $this->assertNull($result['structured_ref']);
-        $this->assertNull($result['structured_ref_type']);
-        $this->assertNull($result['invoice_ref_token']);
-        $this->assertNull($result['counterparty_iban']);
-    }
-
-    /**
      * Fallthrough: the first Swico candidate carries an EMPTY /10/, so the extractor must skip it and
      * take the /10/ from the next candidate rather than returning an empty string. This is the only
      * non-obvious branch in the file.
@@ -182,8 +125,8 @@ class RemittanceRefParseTest extends TestCase
     }
 
     /**
-     * A booked entry with no NtryDtls at all (the !isset early return) must yield four nulls — the
-     * happy/edge tests carry NtryDtls, so this exercises the topmost guard specifically.
+     * A booked entry with no transaction details at all (the !isset early return) must yield three
+     * nulls without a PHP warning — failOnWarning is on, so a stray notice would fail the suite.
      */
     public function testReturnsAllNullWhenNtryDtlsAbsent(): void
     {
@@ -199,6 +142,26 @@ class RemittanceRefParseTest extends TestCase
         $this->assertNull($result['structured_ref']);
         $this->assertNull($result['structured_ref_type']);
         $this->assertNull($result['invoice_ref_token']);
-        $this->assertNull($result['counterparty_iban']);
+    }
+
+    /**
+     * TxDtls present but carrying neither a structured reference nor Swico billing info (e.g. a bank
+     * fee line) must also yield three nulls.
+     */
+    public function testReturnsAllNullWhenNoReferenceBlocks(): void
+    {
+        $ntry = $this->loadNtry(
+            '<Ntry xmlns="urn:iso:std:iso:20022:tech:xsd:camt.053.001.08">'
+            . '<Amt Ccy="CHF">10.00</Amt>'
+            . '<CdtDbtInd>DBIT</CdtDbtInd>'
+            . '<NtryDtls><TxDtls></TxDtls></NtryDtls>'
+            . '</Ntry>'
+        );
+
+        $result = RemittanceRef::parse($ntry);
+
+        $this->assertNull($result['structured_ref']);
+        $this->assertNull($result['structured_ref_type']);
+        $this->assertNull($result['invoice_ref_token']);
     }
 }

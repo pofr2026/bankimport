@@ -3,29 +3,27 @@
 namespace BankImport;
 
 /**
- * Pure helper that extracts the invoice-matching keys from a single CAMT.053 <Ntry>.
+ * Pure helper that extracts the structured reference keys from a single CAMT.053 <Ntry>.
  *
- * These keys survive ingestion only if pulled out at import time (the keystone, spec §3):
- * Dolibarr's import flattens an entry into one llx_bank row whose structured reference and
- * counterparty IBAN would otherwise be lost or buried in the free-text note. parse() reads
- * only a SimpleXMLElement and returns a plain array, so it is unit-testable without the
+ * These keys survive ingestion only if pulled out at import time (the keystone, spec §3): Dolibarr's
+ * import flattens an entry into one llx_bank row whose structured reference would otherwise be lost.
+ * parse() reads only a SimpleXMLElement and returns a plain array, so it is unit-testable without the
  * Dolibarr runtime (mirrors StatementSummary / FeeSplitter).
  *
- * What it recovers, per spec §12.4:
- *  - structured_ref / structured_ref_type — the creditor reference from RmtInf/Strd/CdtrRefInf.
- *    A real QRR (proprietary, Tp/CdOrPrtry/Prtry) is what foreign/supplier QR-bills carry; an
- *    ISO 11649 reference is SCOR (code, Tp/CdOrPrtry/Cd). This is the deterministic key for the
- *    purchase / third-party direction.
- *  - invoice_ref_token — for our OWN sales QR-bills Dolibarr emits reference type NON and instead
- *    puts the invoice ref into the Swico S1 billing information (//S1/10/<ref>/11/<date>/...). The
- *    /10/ field is the invoice ref; recovering it gives a direct llx_facture.ref lookup.
- *  - counterparty_iban — the OTHER party's IBAN, picked by direction: a credit (CRDT, money in)
- *    means the debtor is the counterparty; a debit (DBIT, money out) means the creditor is. Returned
- *    RAW — pseudonymisation (HMAC, spec §9/§11) is a separate concern applied by the caller, not here,
- *    so the parser stays pure and side-effect-free.
+ * Scope is deliberately narrow — only the keys nothing else already extracts:
+ *  - structured_ref / structured_ref_type — the creditor reference from RmtInf/Strd/CdtrRefInf. A real
+ *    QRR (proprietary, Tp/CdOrPrtry/Prtry) is what foreign/supplier QR-bills carry; an ISO 11649
+ *    reference is SCOR (code, Tp/CdOrPrtry/Cd). This is the deterministic key for purchase/third-party.
+ *  - invoice_ref_token — for our OWN sales QR-bills Dolibarr emits reference type NON and instead puts
+ *    the invoice ref into the Swico S1 billing information (//S1/10/<ref>/11/<date>/...). The /10/ field
+ *    is the invoice ref; recovering it gives a direct llx_facture.ref lookup (spec §12.4).
  *
- * Every field is best-effort: a missing block yields null rather than an error, because real CAMT
- * files omit whichever blocks do not apply to a given entry.
+ * The counterparty IBAN is intentionally NOT extracted here: EntryPlan already derives it
+ * (direction-aware, feeding the note and import_key), so re-deriving it would duplicate that logic
+ * (DRY). The wiring reuses EntryPlan's value and pseudonymises it via IbanPseudonymizer.
+ *
+ * Every field is best-effort: a missing block yields null rather than an error, because real CAMT files
+ * omit whichever blocks do not apply to a given entry.
  */
 class RemittanceRef
 {
@@ -36,12 +34,12 @@ class RemittanceRef
     private const SWICO_TAG_INVOICE_REF = '10';
 
     /**
-     * Extract the matching keys from one <Ntry>.
+     * Extract the structured reference keys from one <Ntry>.
      *
      * @param  \SimpleXMLElement $ntry  A CAMT.053 <Ntry> element with the default namespace already
      *                                  stripped (the live import strips it before SimpleXML, so a
      *                                  caller can use property access).
-     * @return array{structured_ref: ?string, structured_ref_type: ?string, invoice_ref_token: ?string, counterparty_iban: ?string}
+     * @return array{structured_ref: ?string, structured_ref_type: ?string, invoice_ref_token: ?string}
      */
     public static function parse(\SimpleXMLElement $ntry): array
     {
@@ -49,7 +47,6 @@ class RemittanceRef
             'structured_ref'      => null,
             'structured_ref_type' => null,
             'invoice_ref_token'   => null,
-            'counterparty_iban'   => null,
         );
 
         // CAMT may split one booked entry into several transaction details; v0.1 reads the first
@@ -96,9 +93,6 @@ class RemittanceRef
         // --- Swico S1 billing-info invoice-ref token (/10/) ---
         $result['invoice_ref_token'] = self::extractSwicoInvoiceRef($txDtls);
 
-        // --- Counterparty IBAN, chosen by direction ---
-        $result['counterparty_iban'] = self::extractCounterpartyIban($ntry, $txDtls);
-
         return $result;
     }
 
@@ -143,34 +137,5 @@ class RemittanceRef
         }
 
         return null;
-    }
-
-    /**
-     * Pick the counterparty IBAN from RltdPties based on the entry direction: on a credit the money
-     * comes FROM the debtor, on a debit it goes TO the creditor. Returns null when the direction is
-     * unknown or the relevant account block is absent.
-     *
-     * Direction is read from TxDtls/CdtDbtInd when present (a reversal/storno can flip the transaction
-     * direction relative to the booked Ntry), falling back to Ntry/CdtDbtInd.
-     */
-    private static function extractCounterpartyIban(\SimpleXMLElement $ntry, \SimpleXMLElement $txDtls): ?string
-    {
-        if (!isset($txDtls->RltdPties)) {
-            return null;
-        }
-        $rltd = $txDtls->RltdPties;
-        $direction = (isset($txDtls->CdtDbtInd) && trim((string) $txDtls->CdtDbtInd) !== '')
-            ? trim((string) $txDtls->CdtDbtInd)
-            : trim((string) $ntry->CdtDbtInd);
-
-        if ($direction === 'CRDT') {
-            $iban = isset($rltd->DbtrAcct->Id->IBAN) ? trim((string) $rltd->DbtrAcct->Id->IBAN) : '';
-        } elseif ($direction === 'DBIT') {
-            $iban = isset($rltd->CdtrAcct->Id->IBAN) ? trim((string) $rltd->CdtrAcct->Id->IBAN) : '';
-        } else {
-            $iban = '';
-        }
-
-        return $iban !== '' ? $iban : null;
     }
 }
