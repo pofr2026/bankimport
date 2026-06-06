@@ -343,7 +343,7 @@ integration (separate track) · cost centers/MPK (when per-channel P&L is wanted
 2. ✅ **SPIKE #2 (reversal) — DONE (2026-06-06):** native `delete()` at `fk_bank=NULL/0` is line-safe
    (R1 live); procedure proven = **`setUnpaid()` → `delete()` → manual `bank_url` cleanup** (order
    corrected: delete refuses while closed); both flows 7/7. Artifact: same script `--phase=reverse`.
-3. ✅ **Keystone in `bankimport` — DONE (2026-06-06):** side-table `llx_bankimport_line_ref` (fk_bank PK)
+3. 🟡 **Keystone in `bankimport` — INGESTION DONE, cleanup OUTSTANDING (2026-06-06):** side-table `llx_bankimport_line_ref` (fk_bank PK)
    + pure `RemittanceRef` (QRR/SCOR + Swico `/10/` token) + pure `IbanPseudonymizer` (HMAC, pepper from
    conf.php) + wired into the import via `EntryPlan` (`line_ref`) and `BankImport::writeLineRef`
    (best-effort). #4 resolved (§12.4). Unit suite 75/75; wiring integration-verified
@@ -352,6 +352,12 @@ integration (separate track) · cost centers/MPK (when per-channel P&L is wanted
    until then the structured keys are still stored but `counterparty_iban_hmac` stays NULL (a warning is
    logged; an admin banner is a small follow-up). Pepper is **write-once** in v0.1 — rotation rebuilds
    the corpus (DPO matter).
+   **Outstanding (next keystone sub-step):** *(a)* **orphan cleanup** — `line_ref` has no FK-cascade
+   (Dolibarr convention), so deleting an `llx_bank` line (native UI or the SPIKE #2 reversal) leaves a
+   stale row → needs a delete-trigger or a periodic reap (`WHERE fk_bank NOT IN (SELECT rowid FROM
+   llx_bank)`); the engine must also tolerate a stale `line_ref` defensively. *(b)* **raw IBAN still in
+   `note_private`** — the import keeps writing `CounterpartyIBAN=<raw>` to the note (pre-existing), so
+   the HMAC protects only the side-table; full IBAN protection needs the note addressed too (§9, v0.2).
 4. **Generate the new module** via Module Builder (assigns the module ID + scaffold: descriptor, ACL,
    menu, admin page, langs) → strip generated CRUD. Add its folder to the multi-root workspace.
 5. **Core engine** (TDD, pure classes in the new module's `core/class/`): normalizer, retriever
