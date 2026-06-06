@@ -58,4 +58,29 @@ class IbanPseudonymizerTest extends TestCase
         $this->assertSame(self::VECTOR_OTHER_PEPPER, $hash);
         $this->assertNotSame(self::VECTOR_PEPPER_123, $hash);
     }
+
+    /**
+     * Defensive contract: an IBAN that is empty after canonicalisation must throw, not return the HMAC
+     * of an empty string. Otherwise every "no IBAN" case would collapse to one identical hash and
+     * poison the L1 / own-transfer buckets. The wiring already skips RemittanceRef's null IBANs, so an
+     * empty value reaching here is a contract violation and should fail loud.
+     */
+    public function testRejectsEmptyIbanAfterCanonicalisation(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+
+        IbanPseudonymizer::hash('   ', 'pepper-123');
+    }
+
+    /**
+     * Canonicalisation must strip ALL non-alphanumeric separators (dots, dashes, and a non-breaking
+     * space U+00A0), not just ASCII spaces — otherwise the same account formatted oddly (e.g. by the
+     * §8 history bootstrap regex) would hash differently. The messy form must match the canonical vector.
+     */
+    public function testCanonicalisationStripsAllNonAlphanumericSeparators(): void
+    {
+        $messy = "ch93-0076.2011\u{00A0}6238 5295 7";
+
+        $this->assertSame(self::VECTOR_PEPPER_123, IbanPseudonymizer::hash($messy, 'pepper-123'));
+    }
 }
