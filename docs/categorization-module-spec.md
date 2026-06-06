@@ -310,10 +310,20 @@ integration (separate track) · cost centers/MPK (when per-channel P&L is wanted
    `if (!empty($currencyofpayment))` (multicurrency only). → same-currency v0.1 does **not** force
    `fk_account` → no tension with the NULL-`fk_bank` strategy (re-examine at multicurrency / v0.2).
 
-**Still open (needs the keystone spike, reads the PDF layer):**
-4. QR-bill reference composition in Dolibarr: invertible (decode invoice rowid/ref from the incoming
-   reference)? both formats (QRR / `RF…`)? materialized anywhere (`ref_ext`)? own code or vendored
-   library? historical schema drift?
+**Resolved by code-reading (2026-06-06, `commoninvoice.class.php::buildSwitzerlandQRString` l.2176):**
+4. ✅ QR-bill reference composition. **Native Dolibarr emits reference type `NON`** (hardcoded l.2267,
+   reference field always empty l.2268) — it does **not** generate a structured QRR/SCOR on its own
+   sales QR-bills. The invoice identity travels only in the **Swico S1 billing-info free text**
+   (`//S1/10/<ref>/11/<date>…`, l.2201 — `/10/` = `str_replace('/','',$this->ref)`). It is **computed
+   at PDF render time, not stored** (no `ref_ext`/column; own code, no vendored lib). → **Invertibility:**
+   - **Sales (CRDT):** no QRR to decode — recover `facture.ref` from the Swico `/10/` token (arrives in
+     CAMT `RmtInf/Strd/AddtlRmtInf` or `Ustrd`) → direct lookup via `uk_facture_ref`. Trivially
+     invertible, no need to compute references for all open invoices.
+   - **Purchase / third-party (DBIT):** a *foreign* issuer may use a real QRR/SCOR → arrives as
+     `RmtInf/Strd/CdtrRefInf/Ref`; that is the structured key to parse.
+   → **Keystone must extract BOTH** from `RmtInf`: structured `CdtrRefInf` (QRR/SCOR) **and**
+   `AddtlRmtInf`/`Ustrd` (Swico `/10/`). *(Side note: a rarely-used stored `payment_reference` field
+   exists but the default QR path ignores it.)*
 
 ---
 
