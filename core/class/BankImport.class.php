@@ -814,12 +814,12 @@ class BankImport extends CommonObject
             return 'skipped';
         }
 
+        $principalBankId = 0;
         $this->db->begin();
         try {
             $account = new Account($this->db);
             $account->fetch($this->accountid);
 
-            $principalBankId = 0;
             foreach ($plan['lines'] as $line) {
                 $bankline_id = $account->addline(
                     $plan['dateo'],
@@ -850,18 +850,22 @@ class BankImport extends CommonObject
                 }
             }
 
-            // Keystone (spec §3): persist the principal line's matching keys. Best-effort — never
-            // rolls back the import (see writeLineRef).
-            if ($principalBankId > 0 && !empty($plan['line_ref'])) {
-                $this->writeLineRef($principalBankId, $plan['line_ref']);
-            }
-
             $this->db->commit();
-            return true;
         } catch (Exception $e) {
             $this->db->rollback();
             return $e->getMessage();
         }
+
+        // Keystone (spec §3): persist the principal line's matching keys AFTER commit and OUTSIDE the
+        // import transaction (best-effort). This makes "never rolls back the bank line" airtight even
+        // under a deadlock / lock-timeout that the engine would roll back wholesale — the line is
+        // already committed, and writeLineRef swallows its own errors (logs, never throws), so it can
+        // never turn a successful import into a reported failure.
+        if ($principalBankId > 0 && !empty($plan['line_ref'])) {
+            $this->writeLineRef($principalBankId, $plan['line_ref']);
+        }
+
+        return true;
     }
 
     /**
