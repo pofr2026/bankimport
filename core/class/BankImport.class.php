@@ -25,12 +25,14 @@ require_once __DIR__ . '/StatementSummary.php';
 require_once __DIR__ . '/StatementContinuity.php';
 require_once __DIR__ . '/FeeSplitter.php';
 require_once __DIR__ . '/EntryPlan.php';
+require_once __DIR__ . '/IbanPseudonymizer.php';
 
 use BankImport\ImportKey;
 use BankImport\StatementSummary;
 use BankImport\StatementContinuity;
 use BankImport\FeeSplitter;
 use BankImport\EntryPlan;
+use BankImport\IbanPseudonymizer;
 
 /**
  * BankImport class
@@ -817,6 +819,7 @@ class BankImport extends CommonObject
             $account = new Account($this->db);
             $account->fetch($this->accountid);
 
+            $principalBankId = 0;
             foreach ($plan['lines'] as $line) {
                 $bankline_id = $account->addline(
                     $plan['dateo'],
@@ -840,6 +843,17 @@ class BankImport extends CommonObject
                     return $account->error ?: 'Unknown error while inserting bank line';
                 }
                 $this->updateImportKey($bankline_id, $line['import_key']);
+
+                // The matching keys describe the principal transaction, not a derived fee line.
+                if (empty($line['is_fee'])) {
+                    $principalBankId = $bankline_id;
+                }
+            }
+
+            // Keystone (spec §3): persist the principal line's matching keys. Best-effort — never
+            // rolls back the import (see writeLineRef).
+            if ($principalBankId > 0 && !empty($plan['line_ref'])) {
+                $this->writeLineRef($principalBankId, $plan['line_ref']);
             }
 
             $this->db->commit();
@@ -847,6 +861,70 @@ class BankImport extends CommonObject
         } catch (Exception $e) {
             $this->db->rollback();
             return $e->getMessage();
+        }
+    }
+
+    /**
+     * Persist the keystone matching keys (RemittanceRef structured ref + Swico token + counterparty
+     * IBAN hash) for one principal bank line into llx_bankimport_line_ref (spec §3).
+     *
+     * BEST-EFFORT: the bank line is the source of truth and this side-table is only a matching
+     * accelerator, so a failure here is logged but NEVER rolls back the import — a missing row just
+     * falls back to manual matching. (Because dedup gates re-processing, a transient failure is not
+     * retried; backfilling such rows is a v0.2 concern.)
+     *
+     * The IBAN is pseudonymised with a pepper held OUTSIDE the database (conf.php
+     * $dolibarr_main_bankimport_iban_pepper, spec §9). When the pepper is absent the hash is left NULL
+     * — the structured keys are still stored, the raw IBAN is NEVER persisted, and IBAN-based matching
+     * simply stays off until a pepper is configured.
+     *
+     * @param int   $fkBank  rowid of the principal llx_bank line.
+     * @param array $lineRef The plan's 'line_ref' (structured_ref, structured_ref_type,
+     *                        invoice_ref_token, counterparty_iban).
+     * @return void
+     */
+    private function writeLineRef($fkBank, array $lineRef)
+    {
+        global $dolibarr_main_bankimport_iban_pepper;
+
+        $ibanHmac = null;
+        if (!empty($lineRef['counterparty_iban'])) {
+            if (!empty($dolibarr_main_bankimport_iban_pepper)) {
+                $ibanHmac = IbanPseudonymizer::hash($lineRef['counterparty_iban'], $dolibarr_main_bankimport_iban_pepper);
+            } else {
+                dol_syslog('BankImport: IBAN pepper not configured (conf.php $dolibarr_main_bankimport_iban_pepper); '
+                    . 'storing line_ref without IBAN hash — IBAN matching disabled until a pepper is set.', LOG_WARNING);
+            }
+        }
+
+        $structuredRef  = $lineRef['structured_ref'] ?? null;
+        $structuredType = $lineRef['structured_ref_type'] ?? null;
+        $invoiceToken   = $lineRef['invoice_ref_token'] ?? null;
+
+        // Nothing worth storing (e.g. a bank fee line: no reference, no usable IBAN) -> skip the row.
+        if ($structuredRef === null && $invoiceToken === null && $ibanHmac === null) {
+            return;
+        }
+
+        $escaped = array();
+        foreach (array($structuredRef, $structuredType, $invoiceToken, $ibanHmac) as $value) {
+            $escaped[] = ($value === null) ? 'NULL' : "'" . $this->db->escape($value) . "'";
+        }
+
+        $sql = "INSERT INTO " . MAIN_DB_PREFIX . "bankimport_line_ref"
+            . " (fk_bank, structured_ref, structured_ref_type, invoice_ref_token, counterparty_iban_hmac, date_import)"
+            . " VALUES (" . ((int) $fkBank) . ", " . $escaped[0] . ", " . $escaped[1] . ", "
+            . $escaped[2] . ", " . $escaped[3] . ", '" . $this->db->idate(dol_now()) . "')"
+            . " ON DUPLICATE KEY UPDATE"
+            . " structured_ref = VALUES(structured_ref),"
+            . " structured_ref_type = VALUES(structured_ref_type),"
+            . " invoice_ref_token = VALUES(invoice_ref_token),"
+            . " counterparty_iban_hmac = VALUES(counterparty_iban_hmac),"
+            . " date_import = VALUES(date_import)";
+
+        if (!$this->db->query($sql)) {
+            dol_syslog('BankImport: failed to persist line_ref for fk_bank=' . ((int) $fkBank)
+                . ': ' . $this->db->lasterror(), LOG_WARNING);
         }
     }
 

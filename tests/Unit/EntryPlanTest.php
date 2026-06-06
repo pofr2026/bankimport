@@ -350,4 +350,66 @@ class EntryPlanTest extends TestCase
             'A missing XML value date must default to the booking date (datev = dateo).'
         );
     }
+
+    /**
+     * Keystone (spec §3): the plan carries a 'line_ref' holding the structured keys RemittanceRef pulls
+     * from the entry (QRR/SCOR reference + Swico /10/ token) PLUS the counterparty IBAN — reusing the
+     * IBAN EntryPlan already derives (raw here; the HMAC is applied later by the write glue, §9).
+     */
+    public function test_plan_xml_attaches_line_ref(): void
+    {
+        $ntry = $this->makeNtry(<<<'XML'
+            <Ntry>
+              <Amt Ccy="CHF">15.02</Amt>
+              <CdtDbtInd>CRDT</CdtDbtInd>
+              <AcctSvcrRef>ref-qr-1</AcctSvcrRef>
+              <NtryDtls><TxDtls>
+                <RltdPties>
+                  <Dbtr><Nm>Client</Nm></Dbtr>
+                  <DbtrAcct><Id><IBAN>CH9300762011623852957</IBAN></Id></DbtrAcct>
+                </RltdPties>
+                <RmtInf><Strd>
+                  <CdtrRefInf><Tp><CdOrPrtry><Prtry>QRR</Prtry></CdOrPrtry></Tp><Ref>210000000003139471430009017</Ref></CdtrRefInf>
+                  <AddtlRmtInf>//S1/10/TC1-2605-0158/11/260528</AddtlRmtInf>
+                </Strd></RmtInf>
+              </TxDtls></NtryDtls>
+            </Ntry>
+            XML);
+
+        $plan = EntryPlan::planXmlEntry($ntry, self::DATEO, self::DATEV, true, self::FEE_BASE);
+
+        $this->assertSame([
+            'structured_ref'      => '210000000003139471430009017',
+            'structured_ref_type' => 'QRR',
+            'invoice_ref_token'   => 'TC1-2605-0158',
+            'counterparty_iban'   => 'CH9300762011623852957',
+        ], $plan['line_ref']);
+    }
+
+    /**
+     * The CSV path has no structured/QR reference, but it does carry the counterparty IBAN — so its
+     * line_ref holds the IBAN only (structured fields null), keeping the own-transfer filter and L1
+     * IBAN-match uniform across import sources (spec §10).
+     */
+    public function test_plan_csv_attaches_line_ref_with_iban_only(): void
+    {
+        $fieldMapping = [
+            'booking_date' => 0, 'value_date' => 1, 'payment_purpose' => 2, 'amount' => 3,
+            'mandate_reference' => 4, 'counterparty_bic' => 5, 'counterparty_iban' => 6,
+            'counterparty_name' => 7, 'collector_reference' => 8, 'creditor_id' => 9,
+        ];
+        $data = [
+            '28.04.26', '28.04.26', 'Office supplies', '-42,50', 'MND-7',
+            'BICDE00', 'DE00123456780000000099', 'Stationers Ltd', '', '',
+        ];
+
+        $plan = EntryPlan::planCsvRow($data, $fieldMapping, -42.50, self::DATEO, self::DATEV);
+
+        $this->assertSame([
+            'structured_ref'      => null,
+            'structured_ref_type' => null,
+            'invoice_ref_token'   => null,
+            'counterparty_iban'   => 'DE00123456780000000099',
+        ], $plan['line_ref']);
+    }
 }

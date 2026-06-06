@@ -4,6 +4,7 @@ namespace BankImport;
 
 require_once __DIR__ . '/FeeSplitter.php';
 require_once __DIR__ . '/ImportKey.php';
+require_once __DIR__ . '/RemittanceRef.php';
 
 /**
  * Pure planner: turns ONE parsed bank entry into the list of bank line(s) to write,
@@ -33,6 +34,9 @@ require_once __DIR__ . '/ImportKey.php';
  *     'label' => string,             // principal line label
  *     'is_split' => bool,            // true only when an embedded fee was broken out
  *     'lines' => array<int, array{amount: float, label: string, import_key: string, is_fee: bool}>,
+ *     'line_ref' => array{structured_ref: ?string, structured_ref_type: ?string, invoice_ref_token: ?string, counterparty_iban: ?string},
+ *                                    // keystone matching keys (spec §3); IBAN raw, HMAC'd by the glue.
+ *                                    // Pertains to the principal line; the glue keys it on that fk_bank.
  *   ]
  */
 class EntryPlan
@@ -163,6 +167,13 @@ class EntryPlan
             $isSplit = true;
         }
 
+        // Keystone matching keys (spec §3): the structured reference + Swico token come from
+        // RemittanceRef; the counterparty IBAN is REUSED from $iban_other above rather than re-derived
+        // (DRY). Raw here — the write glue pseudonymises the IBAN (HMAC, §9). Pertains to the principal
+        // transaction, so the glue keys it on the principal line, not a split fee line.
+        $lineRef = RemittanceRef::parse($ntry);
+        $lineRef['counterparty_iban'] = ($iban_other !== '') ? $iban_other : null;
+
         return array(
             'dateo'       => $dateo,
             'datev'       => $datev,
@@ -173,6 +184,7 @@ class EntryPlan
             'label'       => $label,
             'is_split'    => $isSplit,
             'lines'       => $lines,
+            'line_ref'    => $lineRef,
         );
     }
 
@@ -218,6 +230,15 @@ class EntryPlan
                 'import_key' => $import_key,
                 'is_fee'     => false,
             )),
+            // CSV carries no structured/QR reference, but the counterparty IBAN is present — emit a
+            // line_ref with the IBAN only so the own-transfer filter / L1 IBAN-match stay uniform
+            // across import sources (spec §10). Structured fields stay null.
+            'line_ref'    => array(
+                'structured_ref'      => null,
+                'structured_ref_type' => null,
+                'invoice_ref_token'   => null,
+                'counterparty_iban'   => ($iban_other !== '') ? $iban_other : null,
+            ),
         );
     }
 
