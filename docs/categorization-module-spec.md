@@ -128,6 +128,11 @@ lookup), rather than computing the reference for all open invoices?
 **Pre-flight (once per batch):** one query → lightweight index of open invoices
 (`rowid, ref, fk_soc, total_ttc`, filter `fk_statut=1 AND paye=0`), **without computing balance**.
 
+**Side-table read contract (HARD requirement):** the engine MUST read `llx_bankimport_line_ref` by
+joining **FROM `llx_bank`** (the work item is a bank line), **never FROM `line_ref`**. This guarantees a
+stale side-table row (a deleted line not yet reaped — see §13.3) is never selected, so orphan rows are
+correctness-inert and the reap is a §9-retention nicety, not a matching requirement.
+
 **Per transaction (from the queue):**
 - **Pre-filters:** own transfer (IBAN ∈ own accounts from `llx_bank_account`) → skip. Processor
   (IBAN/name ∈ map) → clearing account per config.
@@ -343,7 +348,7 @@ integration (separate track) · cost centers/MPK (when per-channel P&L is wanted
 2. ✅ **SPIKE #2 (reversal) — DONE (2026-06-06):** native `delete()` at `fk_bank=NULL/0` is line-safe
    (R1 live); procedure proven = **`setUnpaid()` → `delete()` → manual `bank_url` cleanup** (order
    corrected: delete refuses while closed); both flows 7/7. Artifact: same script `--phase=reverse`.
-3. 🟡 **Keystone in `bankimport` — INGESTION DONE, cleanup OUTSTANDING (2026-06-06):** side-table `llx_bankimport_line_ref` (fk_bank PK)
+3. 🟢 **Keystone in `bankimport` — INGESTION + cleanup-trigger DONE (2026-06-07):** side-table `llx_bankimport_line_ref` (fk_bank PK)
    + pure `RemittanceRef` (QRR/SCOR + Swico `/10/` token) + pure `IbanPseudonymizer` (HMAC, pepper from
    conf.php) + wired into the import via `EntryPlan` (`line_ref`) and `BankImport::writeLineRef`
    (best-effort). #4 resolved (§12.4). Unit suite 75/75; wiring integration-verified
@@ -352,10 +357,15 @@ integration (separate track) · cost centers/MPK (when per-channel P&L is wanted
    until then the structured keys are still stored but `counterparty_iban_hmac` stays NULL (a warning is
    logged; an admin banner is a small follow-up). Pepper is **write-once** in v0.1 — rotation rebuilds
    the corpus (DPO matter).
-   **Outstanding (next keystone sub-step):** *(a)* **orphan cleanup** — `line_ref` has no FK-cascade
-   (Dolibarr convention), so deleting an `llx_bank` line (native UI or the SPIKE #2 reversal) leaves a
-   stale row → needs a delete-trigger or a periodic reap (`WHERE fk_bank NOT IN (SELECT rowid FROM
-   llx_bank)`); the engine must also tolerate a stale `line_ref` defensively. *(b)* **raw IBAN still in
+   **Cleanup status:** *(a)* **orphan cleanup — trigger DONE (2026-06-07):**
+   `interface_99_modBankImport_LineRef` deletes the `line_ref` row on `BANKACCOUNTLINE_DELETE` (descriptor
+   declares `module_parts['triggers']`; integration-verified, `docs/spikes/keystone_trigger_check.php`).
+   Covers native UI deletion; the SPIKE #2 reversal keeps the line (`fk_bank=NULL`), so it never orphans.
+   *Optional backstop (deferred — §9 retention only, not correctness):* a periodic reap
+   (`DELETE … WHERE fk_bank NOT IN (SELECT rowid FROM llx_bank)`) for deletion paths that bypass the
+   trigger (`$notrigger=1` / raw SQL) — matters for IBAN-HMAC retention, since orphans are otherwise
+   inert (§4 engine contract). **Deploy:** existing installs must re-activate the module to write
+   `MAIN_MODULE_BANKIMPORT_TRIGGERS` (fresh activation is automatic). *(b)* **raw IBAN still in
    `note_private`** — the import keeps writing `CounterpartyIBAN=<raw>` to the note (pre-existing), so
    the HMAC protects only the side-table; full IBAN protection needs the note addressed too (§9, v0.2).
 4. **Generate the new module** via Module Builder (assigns the module ID + scaffold: descriptor, ACL,
