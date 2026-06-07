@@ -33,8 +33,10 @@ class modBankImport extends DolibarrModules
         $this->editor_name = 'Tilo Thiele';
         $this->editor_url = 'mailto:tilo.thiele@hamburg.de';
 
-        // Default module options
-        $this->module_parts = array();
+        // Default module options. 'triggers' => 1 tells Dolibarr to scan core/triggers/ of this module
+        // (writes MAIN_MODULE_BANKIMPORT_TRIGGERS on activation), enabling the line_ref orphan-cleanup
+        // trigger (interface_99_modBankImport_LineRef) on bank-line deletion.
+        $this->module_parts = array('triggers' => 1);
         $this->dirs = array();
         // Link the module's setup page so Dolibarr shows the configure (gear) icon
         // on the Modules list. Without this the page (admin/setup.php) — which holds
